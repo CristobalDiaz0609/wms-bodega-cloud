@@ -259,10 +259,10 @@ elif menu == "📥 Recepción e Ingreso":
                     st.rerun()
 
 # ---------------------------------------------------------
-# 3. PICKING / DESPACHO DE PEDIDOS
+# 3. PICKING / DESPACHO DE PEDIDOS (MULTI-SKU)
 # ---------------------------------------------------------
 elif menu == "🛒 Picking / Despacho":
-    st.header("Motor de Picking y Despacho")
+    st.header("Motor de Picking y Despacho Multi-SKU")
 
     if "hoja_ruta_persistente" not in st.session_state:
         st.session_state.hoja_ruta_persistente = None
@@ -277,76 +277,96 @@ elif menu == "🛒 Picking / Despacho":
     if df_inv.empty:
         st.info("No hay inventario disponible en la bodega para realizar despachos.")
     else:
-        sku_despacho = st.selectbox(
-            "Seleccionar Producto a Despachar",
-            df_inv["sku"] + " - " + df_inv["nombre"],
-        )
-        sku_clean = sku_despacho.split(" - ")[0]
-
-        max_disponible = int(
-            df_inv[df_inv["sku"] == sku_clean]["total_disponible"].values[0]
-        )
-        cant_solicitada = st.number_input(
-            f"Cantidad a Solicitar (Máx: {max_disponible})",
-            min_value=1,
-            max_value=max_disponible,
-            value=1,
+        st.subheader("1. Selección de Productos para el Pedido")
+        
+        # Opciones para el multiselect
+        df_inv["opcion_display"] = df_inv["sku"] + " - " + df_inv["nombre"] + " (Stock: " + df_inv["total_disponible"].astype(str) + ")"
+        
+        skus_seleccionados = st.multiselect(
+            "Seleccionar Producto(s) a Despachar",
+            df_inv["opcion_display"]
         )
 
-        if st.button("Generar Hoja de Ruta / Ejecutar Picking"):
-            df_casillas = obtener_df(
-                "SELECT id_inventario, id_ubicacion, cantidad FROM inventario"
-                " WHERE sku = %s ORDER BY cantidad ASC",
-                (sku_clean,),
-            )
+        if skus_seleccionados:
+            st.markdown("---")
+            st.subheader("2. Definir Cantidades a Extraer")
+            
+            cantidades_solicitadas = {}
+            with st.form("form_multi_picking"):
+                cols = st.columns(min(len(skus_seleccionados), 3))
+                
+                for idx, item in enumerate(skus_seleccionados):
+                    sku_clean = item.split(" - ")[0]
+                    nombre_prod = item.split(" - ")[1].split(" (")[0]
+                    max_disp = int(df_inv[df_inv["sku"] == sku_clean]["total_disponible"].values[0])
+                    
+                    with cols[idx % 3]:
+                        st.markdown(f"**{sku_clean}** - {nombre_prod}")
+                        cant = st.number_input(
+                            f"Cantidad (Máx: {max_disp})",
+                            min_value=1,
+                            max_value=max_disp,
+                            value=1,
+                            key=f"cant_{sku_clean}"
+                        )
+                        cantidades_solicitadas[sku_clean] = cant
 
-            por_despachar = cant_solicitada
-            hoja_ruta = []
+                btn_generar_ruta = st.form_submit_button("🚀 Generar Hoja de Ruta / Ejecutar Picking")
 
-            for idx, row in df_casillas.iterrows():
-                if por_despachar <= 0:
-                    break
+                if btn_generar_ruta:
+                    hoja_ruta = []
 
-                id_inv = row["id_inventario"]
-                ubi = row["id_ubicacion"]
-                cant_en_casilla = row["cantidad"]
+                    # Procesar cada SKU solicitado
+                    for sku_clean, cant_solicitada in cantidades_solicitadas.items():
+                        df_casillas = obtener_df(
+                            "SELECT id_inventario, id_ubicacion, cantidad FROM inventario WHERE sku = %s ORDER BY cantidad ASC",
+                            (sku_clean,),
+                        )
 
-                if cant_en_casilla <= por_despachar:
-                    despacho_casilla = cant_en_casilla
-                    ejecutar_query(
-                        "DELETE FROM inventario WHERE id_inventario = %s",
-                        (id_inv,),
-                    )
-                    ejecutar_query(
-                        "UPDATE ubicaciones SET estado = 'Libre' WHERE"
-                        " id_ubicacion = %s",
-                        (ubi,),
-                    )
-                else:
-                    despacho_casilla = por_despachar
-                    nueva_cant = cant_en_casilla - por_despachar
-                    ejecutar_query(
-                        "UPDATE inventario SET cantidad = %s WHERE"
-                        " id_inventario = %s",
-                        (nueva_cant, id_inv),
-                    )
+                        por_despachar = cant_solicitada
 
-                ejecutar_query(
-                    "INSERT INTO historial_movimientos (tipo_movimiento, sku,"
-                    " id_ubicacion, cantidad) VALUES ('DESPACHO', %s, %s, %s)",
-                    (sku_clean, ubi, despacho_casilla),
-                )
+                        for _, row in df_casillas.iterrows():
+                            if por_despachar <= 0:
+                                break
 
-                por_despachar -= despacho_casilla
-                hoja_ruta.append({"Ubicación": ubi, "Extraer": despacho_casilla})
+                            id_inv = row["id_inventario"]
+                            ubi = row["id_ubicacion"]
+                            cant_en_casilla = row["cantidad"]
 
-            st.session_state.hoja_ruta_persistente = pd.DataFrame(hoja_ruta)
-            st.success("🎉 ¡Picking completado con éxito!")
+                            if cant_en_casilla <= por_despachar:
+                                despacho_casilla = cant_en_casilla
+                                ejecutar_query("DELETE FROM inventario WHERE id_inventario = %s", (id_inv,))
+                                ejecutar_query("UPDATE ubicaciones SET estado = 'Libre' WHERE id_ubicacion = %s", (ubi,))
+                            else:
+                                despacho_casilla = por_despachar
+                                nueva_cant = cant_en_casilla - por_despachar
+                                ejecutar_query("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (nueva_cant, id_inv))
+
+                            ejecutar_query(
+                                "INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad) VALUES ('DESPACHO', %s, %s, %s)",
+                                (sku_clean, ubi, despacho_casilla),
+                            )
+
+                            por_despachar -= despacho_casilla
+                            hoja_ruta.append({
+                                "SKU": sku_clean,
+                                "Ubicación": ubi,
+                                "Extraer": despacho_casilla
+                            })
+
+                    # Ordenar la hoja de ruta por Ubicación para optimizar el recorrido del operador
+                    df_hoja_ruta = pd.DataFrame(hoja_ruta)
+                    if not df_hoja_ruta.empty:
+                        df_hoja_ruta = df_hoja_ruta.sort_values(by="Ubicación").reset_index(drop=True)
+
+                    st.session_state.hoja_ruta_persistente = df_hoja_ruta
+                    st.success("🎉 ¡Picking multi-producto completado con éxito!")
+                    st.rerun()
 
         if st.session_state.hoja_ruta_persistente is not None:
             st.markdown("---")
-            st.subheader("📋 Hoja de Ruta Activa para Operador:")
-            st.table(st.session_state.hoja_ruta_persistente)
+            st.subheader("📋 Hoja de Ruta Activa para Operador (Optimizada por Ubicación):")
+            st.dataframe(st.session_state.hoja_ruta_persistente, use_container_width=True)
 
             if st.button("🗑️ Limpiar / Finalizar Ruta"):
                 st.session_state.hoja_ruta_persistente = None
@@ -437,7 +457,6 @@ elif menu == "📊 Dashboard & KPIs":
     # --- GRÁFICO DE LÍNEAS: TENDENCIA DIARIA (DÍAS 1 AL 31) ---
     st.markdown("#### 📈 Tendencia Diaria de Picking (Días 1 al 31)")
 
-    # Query picking por día del mes actual
     df_diario_actual = obtener_df("""
         SELECT DAY(fecha_hora) as dia, SUM(cantidad) as picking_actual
         FROM historial_movimientos
@@ -447,7 +466,6 @@ elif menu == "📊 Dashboard & KPIs":
         GROUP BY DAY(fecha_hora)
     """)
 
-    # Query picking por día del mes pasado
     df_diario_pasado = obtener_df("""
         SELECT DAY(fecha_hora) as dia, SUM(cantidad) as picking_pasado
         FROM historial_movimientos
@@ -457,15 +475,12 @@ elif menu == "📊 Dashboard & KPIs":
         GROUP BY DAY(fecha_hora)
     """)
 
-    # Crear marco base con los días del 1 al 31
     df_dias = pd.DataFrame({"Día del Mes": range(1, 32)})
 
-    # Unir datos diarios
     df_tendencia = df_dias.merge(df_diario_actual, left_on="Día del Mes", right_on="dia", how="left")
     df_tendencia = df_tendencia.merge(df_diario_pasado, left_on="Día del Mes", right_on="dia", how="left")
     df_tendencia.fillna(0, inplace=True)
 
-    # Reestructurar para Plotly (Formato Largo)
     df_lineas = pd.melt(
         df_tendencia,
         id_vars=["Día del Mes"],
