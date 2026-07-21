@@ -279,7 +279,6 @@ elif menu == "🛒 Picking / Despacho":
     else:
         st.subheader("1. Selección de Productos para el Pedido")
         
-        # Opciones para el multiselect
         df_inv["opcion_display"] = df_inv["sku"] + " - " + df_inv["nombre"] + " (Stock: " + df_inv["total_disponible"].astype(str) + ")"
         
         skus_seleccionados = st.multiselect(
@@ -316,7 +315,6 @@ elif menu == "🛒 Picking / Despacho":
                 if btn_generar_ruta:
                     hoja_ruta = []
 
-                    # Procesar cada SKU solicitado
                     for sku_clean, cant_solicitada in cantidades_solicitadas.items():
                         df_casillas = obtener_df(
                             "SELECT id_inventario, id_ubicacion, cantidad FROM inventario WHERE sku = %s ORDER BY cantidad ASC",
@@ -354,7 +352,6 @@ elif menu == "🛒 Picking / Despacho":
                                 "Extraer": despacho_casilla
                             })
 
-                    # Ordenar la hoja de ruta por Ubicación para optimizar el recorrido del operador
                     df_hoja_ruta = pd.DataFrame(hoja_ruta)
                     if not df_hoja_ruta.empty:
                         df_hoja_ruta = df_hoja_ruta.sort_values(by="Ubicación").reset_index(drop=True)
@@ -399,7 +396,6 @@ elif menu == "📊 Dashboard & KPIs":
         "SELECT COALESCE(SUM(cantidad), 0) as t FROM inventario"
     )["t"].values[0]
 
-    # --- CONSULTAS DE SKUS Y PICKING COMPARATIVO ---
     total_skus = obtener_df("SELECT COUNT(*) as t FROM productos")["t"].values[
         0
     ]
@@ -454,26 +450,44 @@ elif menu == "📊 Dashboard & KPIs":
     col_p2.metric("Picking Mes Pasado", f"{picking_mes_pasado} Unidades")
     col_p3.metric("Casillas Disponibles / Libres", f"{total_casillas - casillas_ocupadas}")
 
-    # --- GRÁFICO DE LÍNEAS: TENDENCIA DIARIA (DÍAS 1 AL 31) ---
+    # --- GRÁFICO DE LÍNEAS CON FILTRO POR SKU ---
     st.markdown("#### 📈 Tendencia Diaria de Picking (Días 1 al 31)")
 
-    df_diario_actual = obtener_df("""
+    # Obtener catálogo de SKUs para el selector
+    df_lista_skus = obtener_df("SELECT sku, nombre FROM productos")
+    opciones_sku = ["Todos los SKUs"] + (df_lista_skus["sku"] + " - " + df_lista_skus["nombre"]).tolist()
+
+    sku_filtro_sel = st.selectbox("🔍 Filtrar gráfico por SKU:", opciones_sku)
+
+    # Construir clausula SQL de filtro según la opción elegida
+    if sku_filtro_sel == "Todos los SKUs":
+        where_sku = ""
+        params_sku = ()
+    else:
+        sku_clean_filtro = sku_filtro_sel.split(" - ")[0]
+        where_sku = " AND sku = %s "
+        params_sku = (sku_clean_filtro,)
+
+    # Consultas filtradas o globales
+    df_diario_actual = obtener_df(f"""
         SELECT DAY(fecha_hora) as dia, SUM(cantidad) as picking_actual
         FROM historial_movimientos
         WHERE tipo_movimiento = 'DESPACHO'
           AND MONTH(fecha_hora) = MONTH(CURRENT_DATE())
           AND YEAR(fecha_hora) = YEAR(CURRENT_DATE())
+          {where_sku}
         GROUP BY DAY(fecha_hora)
-    """)
+    """, params_sku if where_sku else None)
 
-    df_diario_pasado = obtener_df("""
+    df_diario_pasado = obtener_df(f"""
         SELECT DAY(fecha_hora) as dia, SUM(cantidad) as picking_pasado
         FROM historial_movimientos
         WHERE tipo_movimiento = 'DESPACHO'
           AND MONTH(fecha_hora) = MONTH(CURRENT_DATE() - INTERVAL 1 MONTH)
           AND YEAR(fecha_hora) = YEAR(CURRENT_DATE() - INTERVAL 1 MONTH)
+          {where_sku}
         GROUP BY DAY(fecha_hora)
-    """)
+    """, params_sku if where_sku else None)
 
     df_dias = pd.DataFrame({"Día del Mes": range(1, 32)})
 
@@ -503,7 +517,7 @@ elif menu == "📊 Dashboard & KPIs":
             "Mes Actual": "#2980b9",
             "Mes Anterior": "#bdc3c7"
         },
-        title="Evolución del Picking Diario (Comparativo Mes Actual vs Mes Anterior)"
+        title=f"Evolución del Picking Diario - [{sku_filtro_sel}]"
     )
 
     fig_lineas.update_layout(
