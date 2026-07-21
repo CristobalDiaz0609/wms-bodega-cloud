@@ -12,7 +12,7 @@ st.set_page_config(
 
 
 # ---------------------------------------------------------
-# CONEXIÓN A BASE DE DATOS (Adaptado para Streamlit Cloud / Aiven)
+# CONEXIÓN A BASE DE DATOS
 # ---------------------------------------------------------
 def obtener_conexion():
     return mysql.connector.connect(
@@ -83,7 +83,6 @@ if menu == "🗺️ Mapa 2D & Estado":
             df_mapa["cantidad"] / df_mapa["capacidad"]
         ) * 100
 
-        # Mantenemos un tamaño visible constante para que las casillas vacías no desaparezcan
         fig = px.scatter(
             df_mapa,
             x="coord_x",
@@ -99,13 +98,12 @@ if menu == "🗺️ Mapa 2D & Estado":
             ],
             text="id_ubicacion",
             color_discrete_map={
-                "Libre": "#2ecc71",  # Verde brillante para disponibles
-                "Ocupado": "#e74c3c",  # Rojo para ocupadas
-                "Inhabilitado": "#95a5a6",  # Gris para inhabilitadas
+                "Libre": "#2ecc71",
+                "Ocupado": "#e74c3c",
+                "Inhabilitado": "#95a5a6",
             },
             title="Distribución Espacial de Casillas",
         )
-        # Ajustamos el tamaño uniforme de las esferas/círculos para que se vean siempre
         fig.update_traces(
             marker=dict(size=28, line=dict(width=1, color="DarkSlateGrey")),
             textposition="top center",
@@ -131,7 +129,7 @@ if menu == "🗺️ Mapa 2D & Estado":
         )
 
 # ---------------------------------------------------------
-# 2. RECEPCIÓN E INGRESO DE MERCADERÍA
+# 2. RECEPCIÓN E INGRESO DE MERCADERÍA (CON CONSOLIDACIÓN)
 # ---------------------------------------------------------
 elif menu == "📥 Recepción e Ingreso":
     st.header("Ingreso de Stock a Bodega")
@@ -139,64 +137,135 @@ elif menu == "📥 Recepción e Ingreso":
     df_prods = obtener_df(
         "SELECT sku, nombre, capacidad_por_casilla FROM productos"
     )
-    df_libres = obtener_df(
-        "SELECT id_ubicacion FROM ubicaciones WHERE estado = 'Libre'"
-    )
 
-    if df_prods.empty or df_libres.empty:
-        st.warning(
-            "Asegúrate de tener productos registrados y casillas libres"
-            " disponibles."
-        )
+    if df_prods.empty:
+        st.warning("Asegúrate de tener productos registrados en el sistema.")
     else:
-        with st.form("form_ingreso"):
-            sku_sel = st.selectbox(
-                "Seleccionar Producto (SKU)",
-                df_prods["sku"] + " - " + df_prods["nombre"],
-            )
-            sku_limpio = sku_sel.split(" - ")[0]
+        # 1. Selección del Producto
+        sku_sel = st.selectbox(
+            "Seleccionar Producto (SKU)",
+            df_prods["sku"] + " - " + df_prods["nombre"],
+        )
+        sku_limpio = sku_sel.split(" - ")[0]
 
-            cap_max = df_prods[df_prods["sku"] == sku_limpio][
+        cap_max = int(
+            df_prods[df_prods["sku"] == sku_limpio][
                 "capacidad_por_casilla"
             ].values[0]
-            st.info(
-                f"Capacidad máxima permitida por casilla para este SKU:"
-                f" {cap_max} unidades."
+        )
+
+        # 2. Buscar casillas libres O casillas parcialmente ocupadas por el MISMO SKU
+        query_disponibles = """
+            SELECT u.id_ubicacion, 
+                   COALESCE(i.cantidad, 0) AS cantidad_actual,
+                   (%s - COALESCE(i.cantidad, 0)) AS espacio_disponible,
+                   CASE 
+                       WHEN i.id_inventario IS NULL THEN 'Completamente Libre'
+                       ELSE 'Parcialmente Ocupada (Consolidar)'
+                   END AS tipo_casilla
+            FROM ubicaciones u
+            LEFT JOIN inventario i ON u.id_ubicacion = i.id_ubicacion
+            WHERE u.estado != 'Inhabilitado' 
+              AND (
+                  i.id_inventario IS NULL 
+                  OR (i.sku = %s AND i.cantidad < %s)
+              );
+        """
+        df_disponibles = obtener_df(
+            query_disponibles, (cap_max, sku_limpio, cap_max)
+        )
+
+        if df_disponibles.empty:
+            st.error(
+                "❌ No hay casillas disponibles ni espacio suficiente para"
+                " consolidar este producto."
+            )
+        else:
+            # Crear lista formateada para el selectbox
+            df_disponibles["opcion_texto"] = (
+                df_disponibles["id_ubicacion"]
+                + " ["
+                + df_disponibles["tipo_casilla"]
+                + " - Espacio libre: "
+                + df_disponibles["espacio_disponible"].astype(str)
+                + " un.]"
             )
 
-            ubicacion_sel = st.selectbox(
-                "Seleccionar Casilla Disponible", df_libres["id_ubicacion"]
-            )
-            cantidad_ingreso = st.number_input(
-                "Cantidad a Ingresar",
-                min_value=1,
-                max_value=int(cap_max),
-                value=1,
-            )
+            with st.form("form_ingreso"):
+                ubi_seleccionada_txt = st.selectbox(
+                    "Seleccionar Casilla Destino",
+                    df_disponibles["opcion_texto"],
+                )
+                ubi_limpia = ubi_seleccionada_txt.split(" [")[0]
 
-            btn_ingresar = st.form_submit_button("Confirmar Ingreso")
+                # Obtener espacio maximo para esta casilla seleccionada
+                espacio_max = int(
+                    df_disponibles[
+                        df_disponibles["id_ubicacion"] == ubi_limpia
+                    ]["espacio_disponible"].values[0]
+                )
 
-            if btn_ingresar:
-                ejecutar_query(
-                    "INSERT INTO inventario (id_ubicacion, sku, cantidad)"
-                    " VALUES (%s, %s, %s)",
-                    (ubicacion_sel, sku_limpio, cantidad_ingreso),
+                st.info(
+                    f"Espacio máximo disponible en la casilla {ubi_limpia}:"
+                    f" {espacio_max} unidades."
                 )
-                ejecutar_query(
-                    "UPDATE ubicaciones SET estado = 'Ocupado' WHERE"
-                    " id_ubicacion = %s",
-                    (ubicacion_sel,),
+
+                cantidad_ingreso = st.number_input(
+                    "Cantidad a Ingresar",
+                    min_value=1,
+                    max_value=espacio_max,
+                    value=1,
                 )
-                ejecutar_query(
-                    "INSERT INTO historial_movimientos (tipo_movimiento, sku,"
-                    " id_ubicacion, cantidad) VALUES ('ENTRADA', %s, %s, %s)",
-                    (sku_limpio, ubicacion_sel, cantidad_ingreso),
-                )
-                st.success(
-                    f"✅ Se ingresaron {cantidad_ingreso} unidades de"
-                    f" {sku_limpio} en la casilla {ubicacion_sel}."
-                )
-                st.rerun()
+
+                btn_ingresar = st.form_submit_button("Confirmar Ingreso")
+
+                if btn_ingresar:
+                    # Verificar si la casilla ya tiene un registro en inventario
+                    inv_existente = obtener_df(
+                        "SELECT id_inventario, cantidad FROM inventario WHERE"
+                        " id_ubicacion = %s",
+                        (ubi_limpia,),
+                    )
+
+                    if inv_existente.empty:
+                        # Insertar nuevo registro
+                        ejecutar_query(
+                            "INSERT INTO inventario (id_ubicacion, sku,"
+                            " cantidad) VALUES (%s, %s, %s)",
+                            (ubi_limpia, sku_limpio, cantidad_ingreso),
+                        )
+                    else:
+                        # Sumar al inventario existente
+                        nueva_cant = (
+                            int(inv_existente["cantidad"].values[0])
+                            + cantidad_ingreso
+                        )
+                        ejecutar_query(
+                            "UPDATE inventario SET cantidad = %s WHERE"
+                            " id_ubicacion = %s",
+                            (nueva_cant, ubi_limpia),
+                        )
+
+                    # Cambiar estado de casilla a Ocupado
+                    ejecutar_query(
+                        "UPDATE ubicaciones SET estado = 'Ocupado' WHERE"
+                        " id_ubicacion = %s",
+                        (ubi_limpia,),
+                    )
+
+                    # Registrar movimiento en Kardex
+                    ejecutar_query(
+                        "INSERT INTO historial_movimientos (tipo_movimiento,"
+                        " sku, id_ubicacion, cantidad) VALUES ('ENTRADA', %s,"
+                        " %s, %s)",
+                        (sku_limpio, ubi_limpia, cantidad_ingreso),
+                    )
+
+                    st.success(
+                        f"✅ Se ingresaron {cantidad_ingreso} unidades de"
+                        f" {sku_limpio} en la casilla {ubi_limpia}."
+                    )
+                    st.rerun()
 
 # ---------------------------------------------------------
 # 3. PICKING / DESPACHO DE PEDIDOS
