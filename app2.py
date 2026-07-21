@@ -278,9 +278,9 @@ elif menu == "🛒 Picking / Despacho":
         st.info("No hay inventario disponible en la bodega para realizar despachos.")
     else:
         st.subheader("1. Selección de Productos para el Pedido")
-        
+
         df_inv["opcion_display"] = df_inv["sku"] + " - " + df_inv["nombre"] + " (Stock: " + df_inv["total_disponible"].astype(str) + ")"
-        
+
         skus_seleccionados = st.multiselect(
             "Seleccionar Producto(s) a Despachar",
             df_inv["opcion_display"]
@@ -289,16 +289,16 @@ elif menu == "🛒 Picking / Despacho":
         if skus_seleccionados:
             st.markdown("---")
             st.subheader("2. Definir Cantidades a Extraer")
-            
+
             cantidades_solicitadas = {}
             with st.form("form_multi_picking"):
                 cols = st.columns(min(len(skus_seleccionados), 3))
-                
+
                 for idx, item in enumerate(skus_seleccionados):
                     sku_clean = item.split(" - ")[0]
                     nombre_prod = item.split(" - ")[1].split(" (")[0]
                     max_disp = int(df_inv[df_inv["sku"] == sku_clean]["total_disponible"].values[0])
-                    
+
                     with cols[idx % 3]:
                         st.markdown(f"**{sku_clean}** - {nombre_prod}")
                         cant = st.number_input(
@@ -450,30 +450,33 @@ elif menu == "📊 Dashboard & KPIs":
     col_p2.metric("Picking Mes Pasado", f"{picking_mes_pasado} Unidades")
     col_p3.metric("Casillas Disponibles / Libres", f"{total_casillas - casillas_ocupadas}")
 
-    # --- PROYECCIÓN SIMPLE DE QUIEBRE DE STOCK (NUEVO) ---
+    # --- PROYECCIÓN SIMPLE DE QUIEBRE DE STOCK ---
     st.markdown("---")
     st.subheader("⚠️ Proyección y Predicción de Quiebre de Stock")
 
-    # Obtener stock actual por SKU y total de salidas del mes actual
-    df_quiebre = obtener_df("""
-        SELECT p.sku, p.nombre,
-               COALESCE(SUM(i.cantidad), 0) AS stock_actual,
-               COALESCE(m.salidas_mes, 0) AS salidas_mes
+    # 1. Obtener lista de productos y su stock actual
+    df_stock_prods = obtener_df("""
+        SELECT p.sku, p.nombre, COALESCE(SUM(i.cantidad), 0) as stock_actual
         FROM productos p
         LEFT JOIN inventario i ON p.sku = i.sku
-        LEFT JOIN (
-            SELECT sku, SUM(cantidad) AS salidas_mes
-            FROM historial_movimientos
-            WHERE tipo_movimiento = 'DESPACHO'
-              AND MONTH(fecha_hora) = MONTH(CURRENT_DATE())
-              AND YEAR(fecha_hora) = YEAR(CURRENT_DATE())
-            GROUP BY sku
-        ) m ON p.sku = m.sku
-        GROUP BY p.sku, p.nombre;
+        GROUP BY p.sku, p.nombre
     """)
 
-    if not df_quiebre.empty:
-        # Calcular día actual del mes (evitar división por 0)
+    # 2. Obtener total de salidas del mes actual por SKU
+    df_salidas_mes = obtener_df("""
+        SELECT sku, COALESCE(SUM(cantidad), 0) as salidas_mes
+        FROM historial_movimientos
+        WHERE tipo_movimiento = 'DESPACHO'
+          AND MONTH(fecha_hora) = MONTH(CURRENT_DATE())
+          AND YEAR(fecha_hora) = YEAR(CURRENT_DATE())
+        GROUP BY sku
+    """)
+
+    # 3. Unir datos y calcular proyección en Pandas
+    if not df_stock_prods.empty:
+        df_quiebre = df_stock_prods.merge(df_salidas_mes, on="sku", how="left")
+        df_quiebre["salidas_mes"] = df_quiebre["salidas_mes"].fillna(0)
+
         dia_actual_mes = pd.Timestamp.now().day or 1
 
         # Promedio diario de salida
@@ -484,15 +487,13 @@ elif menu == "📊 Dashboard & KPIs":
         # Días restantes antes de quiebre
         def calcular_dias_restantes(row):
             if row["Promedio Salida Diaria"] <= 0:
-                return 999  # Sin riesgo inmediato de quiebre
-            dias = int(row["stock_actual"] / row["Promedio Salida Diaria"])
-            return dias
+                return 999
+            return int(row["stock_actual"] / row["Promedio Salida Diaria"])
 
         df_quiebre["Días para Quiebre"] = df_quiebre.apply(
             calcular_dias_restantes, axis=1
         )
 
-        # Asignar estado y emoji de alerta
         def categorizar_riesgo(dias):
             if dias <= 7:
                 return "🔴 Crítico (Reordenar ya)"
@@ -505,7 +506,6 @@ elif menu == "📊 Dashboard & KPIs":
             categorizar_riesgo
         )
 
-        # Reemplazar 999 por texto representativo
         df_display_quiebre = df_quiebre.copy()
         df_display_quiebre["Días para Quiebre"] = df_display_quiebre[
             "Días para Quiebre"
