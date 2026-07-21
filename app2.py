@@ -434,36 +434,72 @@ elif menu == "📊 Dashboard & KPIs":
     col_p2.metric("Picking Mes Pasado", f"{picking_mes_pasado} Unidades")
     col_p3.metric("Casillas Disponibles / Libres", f"{total_casillas - casillas_ocupadas}")
 
-    # --- GRÁFICO COMPARATIVO DE PICKING (NUEVO) ---
-    df_picking_comp = pd.DataFrame({
-        "Periodo": ["Mes Anterior", "Mes Actual"],
-        "Unidades Despachadas": [picking_mes_pasado, picking_mes_actual],
+    # --- GRÁFICO DE LÍNEAS: TENDENCIA DIARIA (DÍAS 1 AL 31) ---
+    st.markdown("#### 📈 Tendencia Diaria de Picking (Días 1 al 31)")
+
+    # Query picking por día del mes actual
+    df_diario_actual = obtener_df("""
+        SELECT DAY(fecha_hora) as dia, SUM(cantidad) as picking_actual
+        FROM historial_movimientos
+        WHERE tipo_movimiento = 'DESPACHO'
+          AND MONTH(fecha_hora) = MONTH(CURRENT_DATE())
+          AND YEAR(fecha_hora) = YEAR(CURRENT_DATE())
+        GROUP BY DAY(fecha_hora)
+    """)
+
+    # Query picking por día del mes pasado
+    df_diario_pasado = obtener_df("""
+        SELECT DAY(fecha_hora) as dia, SUM(cantidad) as picking_pasado
+        FROM historial_movimientos
+        WHERE tipo_movimiento = 'DESPACHO'
+          AND MONTH(fecha_hora) = MONTH(CURRENT_DATE() - INTERVAL 1 MONTH)
+          AND YEAR(fecha_hora) = YEAR(CURRENT_DATE() - INTERVAL 1 MONTH)
+        GROUP BY DAY(fecha_hora)
+    """)
+
+    # Crear marco base con los días del 1 al 31
+    df_dias = pd.DataFrame({"Día del Mes": range(1, 32)})
+
+    # Unir datos diarios
+    df_tendencia = df_dias.merge(df_diario_actual, left_on="Día del Mes", right_on="dia", how="left")
+    df_tendencia = df_tendencia.merge(df_diario_pasado, left_on="Día del Mes", right_on="dia", how="left")
+    df_tendencia.fillna(0, inplace=True)
+
+    # Reestructurar para Plotly (Formato Largo)
+    df_lineas = pd.melt(
+        df_tendencia,
+        id_vars=["Día del Mes"],
+        value_vars=["picking_actual", "picking_pasado"],
+        var_name="Periodo",
+        value_name="Unidades Despachadas"
+    )
+    df_lineas["Periodo"] = df_lineas["Periodo"].replace({
+        "picking_actual": "Mes Actual",
+        "picking_pasado": "Mes Anterior"
     })
 
-    fig_picking = px.bar(
-        df_picking_comp,
-        x="Periodo",
+    fig_lineas = px.line(
+        df_lineas,
+        x="Día del Mes",
         y="Unidades Despachadas",
-        text="Unidades Despachadas",
         color="Periodo",
+        markers=True,
         color_discrete_map={
-            "Mes Anterior": "#95a5a6",
-            "Mes Actual": "#3498db",
+            "Mes Actual": "#2980b9",
+            "Mes Anterior": "#bdc3c7"
         },
-        title="Comparativa de Picking: Mes Anterior vs. Mes Actual",
-    )
-    fig_picking.update_traces(
-        textposition="outside",
-        textfont_size=14,
-    )
-    fig_picking.update_layout(
-        showlegend=False,
-        yaxis_title="Unidades Despachadas",
-        xaxis_title="",
-        height=380,
+        title="Evolución del Picking Diario (Comparativo Mes Actual vs Mes Anterior)"
     )
 
-    st.plotly_chart(fig_picking, use_container_width=True)
+    fig_lineas.update_layout(
+        xaxis=dict(tickmode="linear", dtick=1, range=[1, 31]),
+        yaxis_title="Unidades Despachadas",
+        xaxis_title="Día del Mes (1 al 31)",
+        height=400,
+        hovermode="x unified"
+    )
+
+    st.plotly_chart(fig_lineas, use_container_width=True)
 
     st.markdown("---")
 
