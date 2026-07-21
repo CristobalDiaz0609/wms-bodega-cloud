@@ -450,16 +450,92 @@ elif menu == "📊 Dashboard & KPIs":
     col_p2.metric("Picking Mes Pasado", f"{picking_mes_pasado} Unidades")
     col_p3.metric("Casillas Disponibles / Libres", f"{total_casillas - casillas_ocupadas}")
 
+    # --- PROYECCIÓN SIMPLE DE QUIEBRE DE STOCK (NUEVO) ---
+    st.markdown("---")
+    st.subheader("⚠️ Proyección y Predicción de Quiebre de Stock")
+
+    # Obtener stock actual por SKU y total de salidas del mes actual
+    df_quiebre = obtener_df("""
+        SELECT p.sku, p.nombre,
+               COALESCE(SUM(i.cantidad), 0) AS stock_actual,
+               COALESCE(m.salidas_mes, 0) AS salidas_mes
+        FROM productos p
+        LEFT JOIN inventario i ON p.sku = i.sku
+        LEFT JOIN (
+            SELECT sku, SUM(cantidad) AS salidas_mes
+            FROM historial_movimientos
+            WHERE tipo_movimiento = 'DESPACHO'
+              AND MONTH(fecha_hora) = MONTH(CURRENT_DATE())
+              AND YEAR(fecha_hora) = YEAR(CURRENT_DATE())
+            GROUP BY sku
+        ) m ON p.sku = m.sku
+        GROUP BY p.sku, p.nombre;
+    """)
+
+    if not df_quiebre.empty:
+        # Calcular día actual del mes (evitar división por 0)
+        dia_actual_mes = pd.Timestamp.now().day or 1
+
+        # Promedio diario de salida
+        df_quiebre["Promedio Salida Diaria"] = (
+            df_quiebre["salidas_mes"] / dia_actual_mes
+        ).round(2)
+
+        # Días restantes antes de quiebre
+        def calcular_dias_restantes(row):
+            if row["Promedio Salida Diaria"] <= 0:
+                return 999  # Sin riesgo inmediato de quiebre
+            dias = int(row["stock_actual"] / row["Promedio Salida Diaria"])
+            return dias
+
+        df_quiebre["Días para Quiebre"] = df_quiebre.apply(
+            calcular_dias_restantes, axis=1
+        )
+
+        # Asignar estado y emoji de alerta
+        def categorizar_riesgo(dias):
+            if dias <= 7:
+                return "🔴 Crítico (Reordenar ya)"
+            elif dias <= 15:
+                return "🟡 Moderado"
+            else:
+                return "🟢 Normal"
+
+        df_quiebre["Estado Quiebre"] = df_quiebre["Días para Quiebre"].apply(
+            categorizar_riesgo
+        )
+
+        # Reemplazar 999 por texto representativo
+        df_display_quiebre = df_quiebre.copy()
+        df_display_quiebre["Días para Quiebre"] = df_display_quiebre[
+            "Días para Quiebre"
+        ].astype(str)
+        df_display_quiebre.loc[
+            df_display_quiebre["Días para Quiebre"] == "999", "Días para Quiebre"
+        ] = "Sin salidas recientes"
+
+        st.dataframe(
+            df_display_quiebre[[
+                "sku",
+                "nombre",
+                "stock_actual",
+                "salidas_mes",
+                "Promedio Salida Diaria",
+                "Días para Quiebre",
+                "Estado Quiebre",
+            ]],
+            use_container_width=True,
+        )
+
     # --- GRÁFICO DE LÍNEAS CON FILTRO POR SKU ---
+    st.markdown("---")
     st.markdown("#### 📈 Tendencia Diaria de Picking (Días 1 al 31)")
 
-    # Obtener catálogo de SKUs para el selector
     df_lista_skus = obtener_df("SELECT sku, nombre FROM productos")
     opciones_sku = ["Todos los SKUs"] + (df_lista_skus["sku"] + " - " + df_lista_skus["nombre"]).tolist()
 
     sku_filtro_sel = st.selectbox("🔍 Filtrar gráfico por SKU:", opciones_sku)
 
-    # Construir clausula SQL de filtro según la opción elegida
     if sku_filtro_sel == "Todos los SKUs":
         where_sku = ""
         params_sku = ()
@@ -468,7 +544,6 @@ elif menu == "📊 Dashboard & KPIs":
         where_sku = " AND sku = %s "
         params_sku = (sku_clean_filtro,)
 
-    # Consultas filtradas o globales
     df_diario_actual = obtener_df(f"""
         SELECT DAY(fecha_hora) as dia, SUM(cantidad) as picking_actual
         FROM historial_movimientos
