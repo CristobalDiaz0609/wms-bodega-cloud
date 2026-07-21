@@ -141,7 +141,6 @@ elif menu == "📥 Recepción e Ingreso":
     if df_prods.empty:
         st.warning("Asegúrate de tener productos registrados en el sistema.")
     else:
-        # 1. Selección del Producto
         sku_sel = st.selectbox(
             "Seleccionar Producto (SKU)",
             df_prods["sku"] + " - " + df_prods["nombre"],
@@ -154,7 +153,6 @@ elif menu == "📥 Recepción e Ingreso":
             ].values[0]
         )
 
-        # 2. Buscar casillas libres O casillas parcialmente ocupadas por el MISMO SKU
         query_disponibles = """
             SELECT u.id_ubicacion, 
                    COALESCE(i.cantidad, 0) AS cantidad_actual,
@@ -181,7 +179,6 @@ elif menu == "📥 Recepción e Ingreso":
                 " consolidar este producto."
             )
         else:
-            # Crear lista formateada para el selectbox
             df_disponibles["opcion_texto"] = (
                 df_disponibles["id_ubicacion"]
                 + " ["
@@ -198,7 +195,6 @@ elif menu == "📥 Recepción e Ingreso":
                 )
                 ubi_limpia = ubi_seleccionada_txt.split(" [")[0]
 
-                # Obtener espacio maximo para esta casilla seleccionada
                 espacio_max = int(
                     df_disponibles[
                         df_disponibles["id_ubicacion"] == ubi_limpia
@@ -220,7 +216,6 @@ elif menu == "📥 Recepción e Ingreso":
                 btn_ingresar = st.form_submit_button("Confirmar Ingreso")
 
                 if btn_ingresar:
-                    # Verificar si la casilla ya tiene un registro en inventario
                     inv_existente = obtener_df(
                         "SELECT id_inventario, cantidad FROM inventario WHERE"
                         " id_ubicacion = %s",
@@ -228,14 +223,12 @@ elif menu == "📥 Recepción e Ingreso":
                     )
 
                     if inv_existente.empty:
-                        # Insertar nuevo registro
                         ejecutar_query(
                             "INSERT INTO inventario (id_ubicacion, sku,"
                             " cantidad) VALUES (%s, %s, %s)",
                             (ubi_limpia, sku_limpio, cantidad_ingreso),
                         )
                     else:
-                        # Sumar al inventario existente
                         nueva_cant = (
                             int(inv_existente["cantidad"].values[0])
                             + cantidad_ingreso
@@ -246,14 +239,12 @@ elif menu == "📥 Recepción e Ingreso":
                             (nueva_cant, ubi_limpia),
                         )
 
-                    # Cambiar estado de casilla a Ocupado
                     ejecutar_query(
                         "UPDATE ubicaciones SET estado = 'Ocupado' WHERE"
                         " id_ubicacion = %s",
                         (ubi_limpia,),
                     )
 
-                    # Registrar movimiento en Kardex
                     ejecutar_query(
                         "INSERT INTO historial_movimientos (tipo_movimiento,"
                         " sku, id_ubicacion, cantidad) VALUES ('ENTRADA', %s,"
@@ -367,6 +358,7 @@ elif menu == "🛒 Picking / Despacho":
 elif menu == "📊 Dashboard & KPIs":
     st.header("Analítica de Operación y Reportes")
 
+    # --- CONSULTAS A LA BASE DE DATOS ---
     total_casillas = obtener_df("SELECT COUNT(*) as t FROM ubicaciones")[
         "t"
     ].values[0]
@@ -387,22 +379,62 @@ elif menu == "📊 Dashboard & KPIs":
         "SELECT COALESCE(SUM(cantidad), 0) as t FROM inventario"
     )["t"].values[0]
 
+    # --- CONSULTAS DE SKUS Y PICKING COMPARATIVO ---
+    total_skus = obtener_df("SELECT COUNT(*) as t FROM productos")["t"].values[
+        0
+    ]
+
+    picking_mes_actual = obtener_df("""
+        SELECT COALESCE(SUM(cantidad), 0) as t 
+        FROM historial_movimientos 
+        WHERE tipo_movimiento = 'DESPACHO' 
+          AND MONTH(fecha_hora) = MONTH(CURRENT_DATE()) 
+          AND YEAR(fecha_hora) = YEAR(CURRENT_DATE())
+    """)["t"].values[0]
+
+    picking_mes_pasado = obtener_df("""
+        SELECT COALESCE(SUM(cantidad), 0) as t 
+        FROM historial_movimientos 
+        WHERE tipo_movimiento = 'DESPACHO' 
+          AND MONTH(fecha_hora) = MONTH(CURRENT_DATE() - INTERVAL 1 MONTH) 
+          AND YEAR(fecha_hora) = YEAR(CURRENT_DATE() - INTERVAL 1 MONTH)
+    """)["t"].values[0]
+
+    delta_picking = picking_mes_actual - picking_mes_pasado
+
+    # --- FILA 1: MÉTRICAS GENERALES ---
+    st.subheader("📌 Métricas Principales de Inventario")
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric(
+
+    col1.metric("Total SKUs Registrados", f"{total_skus} Productos")
+    col2.metric("Total Unidades en Stock", f"{stock_actual} Un.")
+    col3.metric(
         "Ocupación de Casillas",
         f"{(casillas_ocupadas/total_casillas)*100:.1f}%",
-        f"{casillas_ocupadas}/{total_casillas} Módulos",
+        f"{casillas_ocupadas}/{total_casillas} Casillas",
     )
-    col2.metric(
+    col4.metric(
         "Ocupación Volumétrica",
         f"{(stock_actual/cap_tot)*100:.1f}%",
-        f"{stock_actual} Unidades",
+        f"Cap. Máx: {cap_tot}",
     )
-    col3.metric("Casillas Libres", f"{total_casillas - casillas_ocupadas}")
-    col4.metric("Total Unidades en Stock", f"{stock_actual}")
+
+    # --- FILA 2: RENDIMIENTO DE PICKING ---
+    st.markdown("---")
+    st.subheader("🛒 Rendimiento de Picking / Despachos")
+    col_p1, col_p2, col_p3 = st.columns(3)
+
+    col_p1.metric(
+        label="Picking Mes Actual",
+        value=f"{picking_mes_actual} Unidades",
+        delta=f"{delta_picking:+d} Unid. vs Mes Pasado",
+    )
+    col_p2.metric("Picking Mes Pasado", f"{picking_mes_pasado} Unidades")
+    col_p3.metric("Casillas Disponibles / Libres", f"{total_casillas - casillas_ocupadas}")
 
     st.markdown("---")
 
+    # --- EXPORTACIÓN DE REPORTES ---
     st.subheader("📤 Exportar Reportes a Excel")
 
     df_inv_exp = obtener_df("SELECT * FROM inventario")
