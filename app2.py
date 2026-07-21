@@ -358,7 +358,7 @@ elif menu == "🛒 Picking / Despacho":
 elif menu == "📊 Dashboard & KPIs":
     st.header("Analítica de Operación y Reportes")
 
-    # --- CONSULTAS A LA BASE DE DATOS ---
+    # --- CONSULTAS BASE A LA BASE DE DATOS ---
     total_casillas = obtener_df("SELECT COUNT(*) as t FROM ubicaciones")[
         "t"
     ].values[0]
@@ -384,7 +384,7 @@ elif menu == "📊 Dashboard & KPIs":
         0
     ]
 
-    picking_mes_actual = obtener_df("""
+    picking_mes_actual_raw = obtener_df("""
         SELECT COALESCE(SUM(cantidad), 0) as t 
         FROM historial_movimientos 
         WHERE tipo_movimiento = 'DESPACHO' 
@@ -392,7 +392,7 @@ elif menu == "📊 Dashboard & KPIs":
           AND YEAR(fecha_hora) = YEAR(CURRENT_DATE())
     """)["t"].values[0]
 
-    picking_mes_pasado = obtener_df("""
+    picking_mes_pasado_raw = obtener_df("""
         SELECT COALESCE(SUM(cantidad), 0) as t 
         FROM historial_movimientos 
         WHERE tipo_movimiento = 'DESPACHO' 
@@ -400,9 +400,12 @@ elif menu == "📊 Dashboard & KPIs":
           AND YEAR(fecha_hora) = YEAR(CURRENT_DATE() - INTERVAL 1 MONTH)
     """)["t"].values[0]
 
+    # Cásting a número entero (int) para evitar el ValueError en Streamlit
+    picking_mes_actual = int(picking_mes_actual_raw)
+    picking_mes_pasado = int(picking_mes_pasado_raw)
     delta_picking = picking_mes_actual - picking_mes_pasado
 
-    # --- FILA 1: MÉTRICAS GENERALES ---
+    # --- FILA 1: MÉTRICAS GENERALES DE INVENTARIO ---
     st.subheader("📌 Métricas Principales de Inventario")
     col1, col2, col3, col4 = st.columns(4)
 
@@ -419,7 +422,7 @@ elif menu == "📊 Dashboard & KPIs":
         f"Cap. Máx: {cap_tot}",
     )
 
-    # --- FILA 2: RENDIMIENTO DE PICKING ---
+    # --- FILA 2: RENDIMIENTO DE PICKING Y DISPONIBILIDAD ---
     st.markdown("---")
     st.subheader("🛒 Rendimiento de Picking / Despachos")
     col_p1, col_p2, col_p3 = st.columns(3)
@@ -434,7 +437,7 @@ elif menu == "📊 Dashboard & KPIs":
 
     st.markdown("---")
 
-    # --- EXPORTACIÓN DE REPORTES ---
+    # --- EXPORTACIÓN DE REPORTES A EXCEL ---
     st.subheader("📤 Exportar Reportes a Excel")
 
     df_inv_exp = obtener_df("SELECT * FROM inventario")
