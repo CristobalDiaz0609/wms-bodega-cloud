@@ -83,13 +83,12 @@ if menu == "🗺️ Mapa 2D & Estado":
             df_mapa["cantidad"] / df_mapa["capacidad"]
         ) * 100
 
+        # Mantenemos un tamaño visible constante para que las casillas vacías no desaparezcan
         fig = px.scatter(
             df_mapa,
             x="coord_x",
             y="coord_y",
             color="estado",
-            size="cantidad",
-            size_max=30,
             hover_name="id_ubicacion",
             hover_data=[
                 "sku",
@@ -100,13 +99,17 @@ if menu == "🗺️ Mapa 2D & Estado":
             ],
             text="id_ubicacion",
             color_discrete_map={
-                "Libre": "#2ecc71",
-                "Ocupado": "#e74c3c",
-                "Inhabilitado": "#95a5a6",
+                "Libre": "#2ecc71",  # Verde brillante para disponibles
+                "Ocupado": "#e74c3c",  # Rojo para ocupadas
+                "Inhabilitado": "#95a5a6",  # Gris para inhabilitadas
             },
             title="Distribución Espacial de Casillas",
         )
-        fig.update_traces(textposition="top center")
+        # Ajustamos el tamaño uniforme de las esferas/círculos para que se vean siempre
+        fig.update_traces(
+            marker=dict(size=28, line=dict(width=1, color="DarkSlateGrey")),
+            textposition="top center",
+        )
         fig.update_layout(
             xaxis=dict(tickmode="linear", dtick=1),
             yaxis=dict(tickmode="linear", dtick=1),
@@ -196,12 +199,11 @@ elif menu == "📥 Recepción e Ingreso":
                 st.rerun()
 
 # ---------------------------------------------------------
-# 3. PICKING / DESPACHO DE PEDIDOS (Con Estado de Sesión Persistente)
+# 3. PICKING / DESPACHO DE PEDIDOS
 # ---------------------------------------------------------
 elif menu == "🛒 Picking / Despacho":
     st.header("Motor de Picking y Despacho")
 
-    # Inicializar la variable persistente en el estado de la sesión si no existe
     if "hoja_ruta_persistente" not in st.session_state:
         st.session_state.hoja_ruta_persistente = None
 
@@ -231,7 +233,6 @@ elif menu == "🛒 Picking / Despacho":
             value=1,
         )
 
-        # Al presionar el botón calculamos y GUARDAMOS la ruta en st.session_state
         if st.button("Generar Hoja de Ruta / Ejecutar Picking"):
             df_casillas = obtener_df(
                 "SELECT id_inventario, id_ubicacion, cantidad FROM inventario"
@@ -279,17 +280,14 @@ elif menu == "🛒 Picking / Despacho":
                 por_despachar -= despacho_casilla
                 hoja_ruta.append({"Ubicación": ubi, "Extraer": despacho_casilla})
 
-            # Guardar el DataFrame generado en la sesión
             st.session_state.hoja_ruta_persistente = pd.DataFrame(hoja_ruta)
             st.success("🎉 ¡Picking completado con éxito!")
 
-        # Renderizar la Hoja de Ruta mientras siga guardada en la sesión
         if st.session_state.hoja_ruta_persistente is not None:
             st.markdown("---")
             st.subheader("📋 Hoja de Ruta Activa para Operador:")
             st.table(st.session_state.hoja_ruta_persistente)
 
-            # Botón para limpiar la vista cuando el operador termine la tarea
             if st.button("🗑️ Limpiar / Finalizar Ruta"):
                 st.session_state.hoja_ruta_persistente = None
                 st.rerun()
@@ -336,7 +334,6 @@ elif menu == "📊 Dashboard & KPIs":
 
     st.markdown("---")
 
-    # Exportación a Excel
     st.subheader("📤 Exportar Reportes a Excel")
 
     df_inv_exp = obtener_df("SELECT * FROM inventario")
