@@ -400,7 +400,6 @@ elif menu == "📊 Dashboard & KPIs":
           AND YEAR(fecha_hora) = YEAR(CURRENT_DATE() - INTERVAL 1 MONTH)
     """)["t"].values[0]
 
-    # Cásting a número entero (int) para evitar el ValueError en Streamlit
     picking_mes_actual = int(picking_mes_actual_raw)
     picking_mes_pasado = int(picking_mes_pasado_raw)
     delta_picking = picking_mes_actual - picking_mes_pasado
@@ -434,6 +433,37 @@ elif menu == "📊 Dashboard & KPIs":
     )
     col_p2.metric("Picking Mes Pasado", f"{picking_mes_pasado} Unidades")
     col_p3.metric("Casillas Disponibles / Libres", f"{total_casillas - casillas_ocupadas}")
+
+    # --- GRÁFICO COMPARATIVO DE PICKING (NUEVO) ---
+    df_picking_comp = pd.DataFrame({
+        "Periodo": ["Mes Anterior", "Mes Actual"],
+        "Unidades Despachadas": [picking_mes_pasado, picking_mes_actual],
+    })
+
+    fig_picking = px.bar(
+        df_picking_comp,
+        x="Periodo",
+        y="Unidades Despachadas",
+        text="Unidades Despachadas",
+        color="Periodo",
+        color_discrete_map={
+            "Mes Anterior": "#95a5a6",
+            "Mes Actual": "#3498db",
+        },
+        title="Comparativa de Picking: Mes Anterior vs. Mes Actual",
+    )
+    fig_picking.update_traces(
+        textposition="outside",
+        textfont_size=14,
+    )
+    fig_picking.update_layout(
+        showlegend=False,
+        yaxis_title="Unidades Despachadas",
+        xaxis_title="",
+        height=380,
+    )
+
+    st.plotly_chart(fig_picking, use_container_width=True)
 
     st.markdown("---")
 
