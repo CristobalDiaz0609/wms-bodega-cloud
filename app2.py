@@ -465,9 +465,9 @@ else:
                     id_inv_dest = int(inv_destino["id_inventario"].values[0])
                     ejecutar_query("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (nueva_cant_dest, id_inv_dest))
 
-                # 3. REGISTRAR EN KÁRDEX (USA EL ID DE UBICACIÓN DESTINO LIMPIO)
+                # 3. REGISTRAR EN KÁRDEX USANDO 'ENTRADA' (COMPATIBLE CON TU ENUM/SCHEMA)
                 ejecutar_query(
-                    "INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad) VALUES ('REUBICACION', %s, %s, %s)",
+                    "INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad) VALUES ('ENTRADA', %s, %s, %s)",
                     (sku_origen, ubi_destino, cant_a_mover)
                 )
 
