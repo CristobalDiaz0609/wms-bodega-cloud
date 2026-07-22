@@ -30,6 +30,8 @@ if "usuario_actual" not in st.session_state:
     st.session_state.usuario_actual = ""
 if "rol_actual" not in st.session_state:
     st.session_state.rol_actual = ""
+if "mensaje_exito_reubicacion" not in st.session_state:
+    st.session_state.mensaje_exito_reubicacion = None
 
 
 def login():
@@ -60,6 +62,7 @@ def logout():
     st.session_state.hoja_ruta_persistente = None
     st.session_state.distancia_total_persistente = None
     st.session_state.operaciones_pendientes_picking = []
+    st.session_state.mensaje_exito_reubicacion = None
     st.rerun()
 
 
@@ -75,7 +78,6 @@ if not st.session_state.autenticado:
     )
 
 else:
-    # Muestra usuario activo y su rol asignado
     rol_label = (
         "👑 Administrador"
         if st.session_state.rol_actual == "admin"
@@ -123,7 +125,6 @@ else:
     # ---------------------------------------------------------
     st.title("📦 Sistema de Gestión de Bodega (WMS 2D)")
 
-    # Definir módulos según el rol asignado
     if st.session_state.rol_actual == "admin":
         modulos_disponibles = [
             "🗺️ Mapa 2D & Estado",
@@ -135,7 +136,6 @@ else:
             "🏷️ Generador de Etiquetas QR",
         ]
     else:
-        # Operario: Accesos operativos
         modulos_disponibles = [
             "🗺️ Mapa 2D & Estado",
             "📥 Recepción e Ingreso",
@@ -353,6 +353,11 @@ else:
         st.header("Reubicación y Traslado Interno de Productos")
         st.write("Mueve stock de una casilla a otra para optimizar espacio o consolidar cargas.")
 
+        # Muestra el mensaje verde de éxito si se acaba de completar un traslado
+        if st.session_state.mensaje_exito_reubicacion:
+            st.success(st.session_state.mensaje_exito_reubicacion)
+            st.session_state.mensaje_exito_reubicacion = None
+
         df_origenes = obtener_df("""
             SELECT i.id_inventario, i.id_ubicacion, i.sku, i.cantidad, p.nombre, p.capacidad_por_casilla
             FROM inventario i
@@ -465,13 +470,17 @@ else:
                     id_inv_dest = int(inv_destino["id_inventario"].values[0])
                     ejecutar_query("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (nueva_cant_dest, id_inv_dest))
 
-                # 3. REGISTRAR EN KÁRDEX USANDO 'ENTRADA' (COMPATIBLE CON TU ENUM/SCHEMA)
+                # 3. REGISTRAR EN KÁRDEX
                 ejecutar_query(
                     "INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad) VALUES ('ENTRADA', %s, %s, %s)",
                     (sku_origen, ubi_destino, cant_a_mover)
                 )
 
-                st.success(f"🎉 Reubicación exitosa: Se trasladaron {cant_a_mover} unidades de {sku_origen} desde {ubi_origen} hacia {ubi_destino}.")
+                # Guardar mensaje verde de confirmación
+                st.session_state.mensaje_exito_reubicacion = (
+                    f"✅ **¡Reubicación completada con éxito!** Se trasladaron correctamente **{cant_a_mover} unidad(es)** de **{sku_origen}** "
+                    f"desde la casilla **{ubi_origen}** hacia **{ubi_destino}**."
+                )
                 st.rerun()
 
     # ---------------------------------------------------------
