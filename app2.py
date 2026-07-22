@@ -128,16 +128,18 @@ else:
         modulos_disponibles = [
             "🗺️ Mapa 2D & Estado",
             "📥 Recepción e Ingreso",
+            "🔄 Reubicación de Casillas",
             "🛒 Picking / Despacho",
             "📊 Dashboard & KPIs",
             "📜 Historial Kárdex",
             "🏷️ Generador de Etiquetas QR",
         ]
     else:
-        # Operario: Solo los 3 primeros y el de etiquetas QR
+        # Operario: Accesos operativos
         modulos_disponibles = [
             "🗺️ Mapa 2D & Estado",
             "📥 Recepción e Ingreso",
+            "🔄 Reubicación de Casillas",
             "🛒 Picking / Despacho",
             "🏷️ Generador de Etiquetas QR",
         ]
@@ -345,7 +347,142 @@ else:
                         st.rerun()
 
     # ---------------------------------------------------------
-    # 3. PICKING / DESPACHO DE PEDIDOS
+    # 3. REUBICACIÓN / MOVIMIENTO INTERNO DE CASILLAS
+    # ---------------------------------------------------------
+    elif menu == "🔄 Reubicación de Casillas":
+        st.header("Reubicación y Traslado Interno de Productos")
+        st.write("Mueve stock de una casilla a otra para optimizar espacio o consolidar cargas.")
+
+        # Obtener casillas que actualmente tienen stock
+        df_origenes = obtener_df("""
+            SELECT i.id_inventario, i.id_ubicacion, i.sku, i.cantidad, p.nombre, p.capacidad_por_casilla
+            FROM inventario i
+            JOIN productos p ON i.sku = p.sku
+            WHERE i.cantidad > 0
+            ORDER BY i.id_ubicacion ASC
+        """)
+
+        if df_origenes.empty:
+            st.info("No hay casillas con stock para reubicar actualmente.")
+        else:
+            df_origenes["display_origen"] = (
+                df_origenes["id_ubicacion"]
+                + " | "
+                + df_origenes["sku"]
+                + " - "
+                + df_origenes["nombre"]
+                + " (Stock actual: "
+                + df_origenes["cantidad"].astype(str)
+                + " un.)"
+            )
+
+            col_orig, col_dest = st.columns(2)
+
+            with col_orig:
+                st.subheader("1. Casilla de Origen")
+                origen_sel_txt = st.selectbox(
+                    "Seleccionar Casilla a Vaciar/Trasladar",
+                    df_origenes["display_origen"]
+                )
+                
+                # Extraer datos de la casilla origen elegida
+                ubi_origen = origen_sel_txt.split(" | ")[0]
+                row_origen = df_origenes[df_origenes["id_ubicacion"] == ubi_origen].iloc[0]
+                
+                id_inv_origen = int(row_origen["id_inventario"])
+                sku_origen = row_origen["sku"]
+                nombre_origen = row_origen["nombre"]
+                cant_disponible_origen = int(row_origen["cantidad"])
+                cap_max_sku = int(row_origen["capacidad_por_casilla"])
+
+                cant_a_mover = st.number_input(
+                    f"Cantidad a Trasladar (Máx: {cant_disponible_origen})",
+                    min_value=1,
+                    max_value=cant_disponible_origen,
+                    value=cant_disponible_origen
+                )
+
+            with col_dest:
+                st.subheader("2. Casilla de Destino")
+                
+                # Buscar casillas destino válidas (libres o con el mismo SKU con espacio)
+                query_destinos = """
+                    SELECT u.id_ubicacion, 
+                           COALESCE(i.cantidad, 0) AS cantidad_actual,
+                           (%s - COALESCE(i.cantidad, 0)) AS espacio_disponible,
+                           CASE 
+                               WHEN i.id_inventario IS NULL THEN 'Completamente Libre'
+                               ELSE 'Mismo SKU (Consolidar)'
+                           END AS tipo_casilla
+                    FROM ubicaciones u
+                    LEFT JOIN inventario i ON u.id_ubicacion = i.id_ubicacion
+                    WHERE u.estado != 'Inhabilitado' 
+                      AND u.id_ubicacion != %s
+                      AND (
+                          i.id_inventario IS NULL 
+                          OR (i.sku = %s AND i.cantidad + %s <= %s)
+                      )
+                    ORDER BY u.id_ubicacion ASC;
+                """
+                df_destinos = obtener_df(query_destinos, (cap_max_sku, ubi_origen, sku_origen, cant_a_mover, cap_max_sku))
+
+                if df_destinos.empty:
+                    st.error("❌ No hay casillas de destino con capacidad suficiente para este traslado.")
+                    btn_mover = False
+                else:
+                    df_destinos["display_destino"] = (
+                        df_destinos["id_ubicacion"]
+                        + " ["
+                        + df_destinos["tipo_casilla"]
+                        + " - Espacio disponible: "
+                        + df_destinos["espacio_disponible"].astype(str)
+                        + " un.]"
+                    )
+
+                    destino_sel_txt = st.selectbox(
+                        "Seleccionar Casilla Destino",
+                        df_destinos["display_destino"]
+                    )
+                    ubi_destino = destino_sel_txt.split(" [")[0]
+
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    btn_mover = st.button("🚀 Confirmar Reubicación", type="primary", use_container_width=True)
+
+            if btn_mover:
+                # 1. ACTUALIZAR ORIGEN
+                if cant_a_mover == cant_disponible_origen:
+                    # Se vació la casilla entera
+                    ejecutar_query("DELETE FROM inventario WHERE id_inventario = %s", (id_inv_origen,))
+                    ejecutar_query("UPDATE ubicaciones SET estado = 'Libre' WHERE id_ubicacion = %s", (ubi_origen,))
+                else:
+                    # Quedan unidades en el origen
+                    nueva_cant_origen = cant_disponible_origen - cant_a_mover
+                    ejecutar_query("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (nueva_cant_origen, id_inv_origen))
+
+                # 2. ACTUALIZAR DESTINO
+                inv_destino = obtener_df("SELECT id_inventario, cantidad FROM inventario WHERE id_ubicacion = %s", (ubi_destino,))
+                
+                if inv_destino.empty:
+                    # La casilla estaba libre
+                    ejecutar_query("INSERT INTO inventario (id_ubicacion, sku, cantidad) VALUES (%s, %s, %s)", (ubi_destino, sku_origen, cant_a_mover))
+                    ejecutar_query("UPDATE ubicaciones SET estado = 'Ocupado' WHERE id_ubicacion = %s", (ubi_destino,))
+                else:
+                    # Consolidación
+                    nueva_cant_dest = int(inv_destino["cantidad"].values[0]) + cant_a_mover
+                    id_inv_dest = int(inv_destino["id_inventario"].values[0])
+                    ejecutar_query("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (nueva_cant_dest, id_inv_dest))
+
+                # 3. REGISTRAR EN KÁRDEX
+                ejecutar_query(
+                    "INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad) VALUES ('REUBICACION', %s, %s, %s)",
+                    (sku_origen, f"{ubi_origen} ➔ {ubi_destino}", cant_a_mover)
+                )
+
+                st.success(f"🎉 Reubicación exitosa: Se trasladaron {cant_a_mover} unidades de {sku_origen} desde {ubi_origen} hacia {ubi_destino}.")
+                st.rerun()
+
+    # ---------------------------------------------------------
+    # 4. PICKING / DESPACHO DE PEDIDOS
     # ---------------------------------------------------------
     elif menu == "🛒 Picking / Despacho":
         st.header("Motor de Picking y Despacho Multi-SKU (Ruta Óptima 2D)")
@@ -618,7 +755,7 @@ else:
                         st.rerun()
 
     # ---------------------------------------------------------
-    # 4. DASHBOARD & KPIS (EXCLUSIVO ADMIN)
+    # 5. DASHBOARD & KPIS (EXCLUSIVO ADMIN)
     # ---------------------------------------------------------
     elif menu == "📊 Dashboard & KPIs":
         st.header("Analítica de Operación y Reportes")
@@ -962,7 +1099,7 @@ else:
         )
 
     # ---------------------------------------------------------
-    # 5. HISTORIAL KÁRDEX (EXCLUSIVO ADMIN)
+    # 6. HISTORIAL KÁRDEX (EXCLUSIVO ADMIN)
     # ---------------------------------------------------------
     elif menu == "📜 Historial Kárdex":
         st.header("Trazabilidad y Auditoría (Kárdex)")
@@ -979,7 +1116,7 @@ else:
             st.dataframe(df_kardex, use_container_width=True)
 
     # ---------------------------------------------------------
-    # 6. GENERADOR DE ETIQUETAS QR
+    # 7. GENERADOR DE ETIQUETAS QR
     # ---------------------------------------------------------
     elif menu == "🏷️ Generador de Etiquetas QR":
         st.header("Generador e Impresión de Etiquetas QR")
