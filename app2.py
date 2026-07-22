@@ -454,7 +454,6 @@ elif menu == "📊 Dashboard & KPIs":
     st.markdown("---")
     st.subheader("⚠️ Proyección y Predicción de Quiebre de Stock")
 
-    # 1. Obtener lista de productos y su stock actual
     df_stock_prods = obtener_df("""
         SELECT p.sku, p.nombre, COALESCE(SUM(i.cantidad), 0) as stock_actual
         FROM productos p
@@ -462,7 +461,6 @@ elif menu == "📊 Dashboard & KPIs":
         GROUP BY p.sku, p.nombre
     """)
 
-    # 2. Obtener total de salidas del mes actual por SKU
     df_salidas_mes = obtener_df("""
         SELECT sku, COALESCE(SUM(cantidad), 0) as salidas_mes
         FROM historial_movimientos
@@ -472,19 +470,16 @@ elif menu == "📊 Dashboard & KPIs":
         GROUP BY sku
     """)
 
-    # 3. Unir datos y calcular proyección en Pandas
     if not df_stock_prods.empty:
         df_quiebre = df_stock_prods.merge(df_salidas_mes, on="sku", how="left")
         df_quiebre["salidas_mes"] = df_quiebre["salidas_mes"].fillna(0)
 
         dia_actual_mes = pd.Timestamp.now().day or 1
 
-        # Promedio diario de salida
         df_quiebre["Promedio Salida Diaria"] = (
             df_quiebre["salidas_mes"] / dia_actual_mes
         ).round(2)
 
-        # Días restantes antes de quiebre
         def calcular_dias_restantes(row):
             if row["Promedio Salida Diaria"] <= 0:
                 return 999
@@ -525,6 +520,52 @@ elif menu == "📊 Dashboard & KPIs":
                 "Estado Quiebre",
             ]],
             use_container_width=True,
+        )
+
+    # --- REPORTE DE PRODUCTOS SIN MOVIMIENTO (SLIDER DINÁMICO 3 A 20 DÍAS) ---
+    st.markdown("---")
+    st.subheader("🧊 Reporte de SKUs Sin Movimiento (Baja Rotación / Stock Inactivo)")
+
+    dias_inactivos_sel = st.slider(
+        "🎚️ Seleccionar umbral de inactividad (Días sin movimiento):",
+        min_value=3,
+        max_value=30,
+        value=14,
+        step=1,
+        help="Mueve la barra para filtrar los productos con stock retenido que no registran entradas ni salidas."
+    )
+
+    df_inactivos = obtener_df("""
+        SELECT p.sku, p.nombre,
+               COALESCE(SUM(i.cantidad), 0) AS stock_actual,
+               MAX(m.fecha_hora) AS ultima_fecha_movimiento,
+               COALESCE(DATEDIFF(CURRENT_DATE(), MAX(m.fecha_hora)), 999) AS dias_sin_movimiento
+        FROM productos p
+        LEFT JOIN inventario i ON p.sku = i.sku
+        LEFT JOIN historial_movimientos m ON p.sku = m.sku
+        GROUP BY p.sku, p.nombre
+        HAVING dias_sin_movimiento >= %s AND stock_actual > 0
+        ORDER BY dias_sin_movimiento DESC;
+    """, (dias_inactivos_sel,))
+
+    if df_inactivos.empty:
+        st.success(f"✅ ¡Excelente! No hay SKUs con stock retenido e inactivo por más de {dias_inactivos_sel} días.")
+    else:
+        st.warning(f"⚠️ Se encontraron **{len(df_inactivos)} SKU(s)** con stock guardado sin registrar ningún movimiento en más de **{dias_inactivos_sel} días**.")
+
+        df_inactivos_display = df_inactivos.copy()
+        df_inactivos_display["ultima_fecha_movimiento"] = df_inactivos_display["ultima_fecha_movimiento"].astype(str).replace("None", "Sin registros de movimiento")
+        df_inactivos_display["dias_sin_movimiento"] = df_inactivos_display["dias_sin_movimiento"].replace(999, "Sin movimientos registrados")
+
+        st.dataframe(
+            df_inactivos_display[[
+                "sku",
+                "nombre",
+                "stock_actual",
+                "ultima_fecha_movimiento",
+                "dias_sin_movimiento"
+            ]],
+            use_container_width=True
         )
 
     # --- GRÁFICO DE LÍNEAS CON FILTRO POR SKU ---
