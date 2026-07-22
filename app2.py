@@ -11,13 +11,14 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# CREDENCIALES DE ACCESO DE TRABAJADORES (USUARIO : CONTRASEÑA)
+# CREDENCIALES Y ROLES DE ACCESO
+# USUARIO : {"password": "...", "rol": "admin" o "operario"}
 # ---------------------------------------------------------
 USUARIOS_PERMITIDOS = {
-    "admin": "admin2026",
-    "operador1": "bodega123",
-    "operador2": "bodega456",
-    "cristobal": "wms2026",
+    "admin": {"password": "admin2026", "rol": "admin"},
+    "cristobal": {"password": "wms2026", "rol": "admin"},
+    "operador1": {"password": "bodega123", "rol": "operario"},
+    "operador2": {"password": "bodega456", "rol": "operario"},
 }
 
 # ---------------------------------------------------------
@@ -27,6 +28,8 @@ if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 if "usuario_actual" not in st.session_state:
     st.session_state.usuario_actual = ""
+if "rol_actual" not in st.session_state:
+    st.session_state.rol_actual = ""
 
 
 def login():
@@ -37,10 +40,13 @@ def login():
     if st.sidebar.button("Ingresar al Sistema", type="primary"):
         if (
             usuario_input in USUARIOS_PERMITIDOS
-            and USUARIOS_PERMITIDOS[usuario_input] == password_input
+            and USUARIOS_PERMITIDOS[usuario_input]["password"] == password_input
         ):
             st.session_state.autenticado = True
             st.session_state.usuario_actual = usuario_input
+            st.session_state.rol_actual = USUARIOS_PERMITIDOS[usuario_input][
+                "rol"
+            ]
             st.sidebar.success(f"¡Bienvenido, {usuario_input}!")
             st.rerun()
         else:
@@ -50,6 +56,7 @@ def login():
 def logout():
     st.session_state.autenticado = False
     st.session_state.usuario_actual = ""
+    st.session_state.rol_actual = ""
     st.session_state.hoja_ruta_persistente = None
     st.session_state.distancia_total_persistente = None
     st.session_state.operaciones_pendientes_picking = []
@@ -68,8 +75,15 @@ if not st.session_state.autenticado:
     )
 
 else:
-    # Muestra el usuario activo y botón de salir
+    # Muestra usuario activo y su rol asignado
+    rol_label = (
+        "👑 Administrador"
+        if st.session_state.rol_actual == "admin"
+        else "👷 Operario"
+    )
     st.sidebar.markdown(f"👤 **Usuario:** `{st.session_state.usuario_actual}`")
+    st.sidebar.markdown(f"🏷️ **Rol:** `{rol_label}`")
+
     if st.sidebar.button("🚪 Cerrar Sesión"):
         logout()
 
@@ -105,21 +119,30 @@ else:
         conn.close()
 
     # ---------------------------------------------------------
-    # INTERFAZ Y NAVEGACIÓN
+    # INTERFAZ Y NAVEGACIÓN SEGÚN EL ROL
     # ---------------------------------------------------------
     st.title("📦 Sistema de Gestión de Bodega (WMS 2D)")
 
-    menu = st.sidebar.radio(
-        "Navegación / Módulos",
-        [
+    # Definir módulos según el rol asignado
+    if st.session_state.rol_actual == "admin":
+        modulos_disponibles = [
             "🗺️ Mapa 2D & Estado",
             "📥 Recepción e Ingreso",
             "🛒 Picking / Despacho",
             "📊 Dashboard & KPIs",
             "📜 Historial Kárdex",
             "🏷️ Generador de Etiquetas QR",
-        ],
-    )
+        ]
+    else:
+        # Operario: Solo los 3 primeros y el de etiquetas QR
+        modulos_disponibles = [
+            "🗺️ Mapa 2D & Estado",
+            "📥 Recepción e Ingreso",
+            "🛒 Picking / Despacho",
+            "🏷️ Generador de Etiquetas QR",
+        ]
+
+    menu = st.sidebar.radio("Navegación / Módulos", modulos_disponibles)
 
     # ---------------------------------------------------------
     # 1. MAPA 2D & ESTADO DE UBICACIONES
@@ -190,7 +213,7 @@ else:
             )
 
     # ---------------------------------------------------------
-    # 2. RECEPCIÓN E INGRESO DE MERCADERÍA (CON CONSOLIDACIÓN)
+    # 2. RECEPCIÓN E INGRESO DE MERCADERÍA
     # ---------------------------------------------------------
     elif menu == "📥 Recepción e Ingreso":
         st.header("Ingreso de Stock a Bodega")
@@ -322,7 +345,7 @@ else:
                         st.rerun()
 
     # ---------------------------------------------------------
-    # 3. PICKING / DESPACHO DE PEDIDOS (MULTI-SKU + RUTA ÓPTIMA + DESCUENTO POST-CONFIRMACIÓN)
+    # 3. PICKING / DESPACHO DE PEDIDOS
     # ---------------------------------------------------------
     elif menu == "🛒 Picking / Despacho":
         st.header("Motor de Picking y Despacho Multi-SKU (Ruta Óptima 2D)")
@@ -398,7 +421,6 @@ else:
                         puntos_extraccion = []
                         operaciones_db = []
 
-                        # SIMULAR Y PLANIFICAR SIN DESCONTAR EN LA BD
                         for (
                             sku_clean,
                             cant_solicitada,
@@ -456,7 +478,6 @@ else:
                                     "y": cy,
                                 })
 
-                        # OPTIMIZACIÓN DE RUTA POR VECINO MÁS CERCANO (0,0)
                         pos_actual = (0, 0)
                         ruta_ordenada = []
                         distancia_total = 0.0
@@ -516,7 +537,6 @@ else:
                         )
                         st.rerun()
 
-            # VISTA DE HOJA DE RUTA CON BOTONES SEPARADOS
             if st.session_state.hoja_ruta_persistente is not None:
                 st.markdown("---")
                 st.subheader("📋 Hoja de Ruta Activa para Operador:")
@@ -553,7 +573,6 @@ else:
                         type="primary",
                         use_container_width=True,
                     ):
-                        # VALIDACIÓN DE SEGURIDAD
                         if st.session_state.operaciones_pendientes_picking:
                             for (
                                 op
@@ -599,12 +618,11 @@ else:
                         st.rerun()
 
     # ---------------------------------------------------------
-    # 4. DASHBOARD & KPIS
+    # 4. DASHBOARD & KPIS (EXCLUSIVO ADMIN)
     # ---------------------------------------------------------
     elif menu == "📊 Dashboard & KPIs":
         st.header("Analítica de Operación y Reportes")
 
-        # --- CONSULTAS BASE A LA BASE DE DATOS ---
         total_casillas = obtener_df("SELECT COUNT(*) as t FROM ubicaciones")[
             "t"
         ].values[0]
@@ -649,7 +667,6 @@ else:
         picking_mes_pasado = int(picking_mes_pasado_raw)
         delta_picking = picking_mes_actual - picking_mes_pasado
 
-        # --- FILA 1: MÉTRICAS GENERALES DE INVENTARIO ---
         st.subheader("📌 Métricas Principales de Inventario")
         col1, col2, col3, col4 = st.columns(4)
 
@@ -666,7 +683,6 @@ else:
             f"Cap. Máx: {cap_tot}",
         )
 
-        # --- FILA 2: RENDIMIENTO DE PICKING Y DISPONIBILIDAD ---
         st.markdown("---")
         st.subheader("🛒 Rendimiento de Picking / Despachos")
         col_p1, col_p2, col_p3 = st.columns(3)
@@ -682,7 +698,6 @@ else:
             f"{total_casillas - casillas_ocupadas}",
         )
 
-        # --- PROYECCIÓN SIMPLE DE QUIEBRE DE STOCK ---
         st.markdown("---")
         st.subheader("⚠️ Proyección y Predicción de Quiebre de Stock")
 
@@ -757,7 +772,6 @@ else:
                 use_container_width=True,
             )
 
-        # --- REPORTE DE PRODUCTOS SIN MOVIMIENTO (SLIDER DINÁMICO 0 A 30 DÍAS) ---
         st.markdown("---")
         st.subheader(
             "🧊 Reporte de SKUs Sin Movimiento (Baja Rotación / Stock Inactivo)"
@@ -824,7 +838,6 @@ else:
                 use_container_width=True,
             )
 
-        # --- GRÁFICO DE LÍNEAS CON FILTRO POR SKU ---
         st.markdown("---")
         st.markdown("#### 📈 Tendencia Diaria de Picking (Días 1 al 31)")
 
@@ -923,8 +936,6 @@ else:
         st.plotly_chart(fig_lineas, use_container_width=True)
 
         st.markdown("---")
-
-        # --- EXPORTACIÓN DE REPORTES A EXCEL ---
         st.subheader("📤 Exportar Reportes a Excel")
 
         df_inv_exp = obtener_df("SELECT * FROM inventario")
@@ -951,7 +962,7 @@ else:
         )
 
     # ---------------------------------------------------------
-    # 5. HISTORIAL KÁRDEX
+    # 5. HISTORIAL KÁRDEX (EXCLUSIVO ADMIN)
     # ---------------------------------------------------------
     elif menu == "📜 Historial Kárdex":
         st.header("Trazabilidad y Auditoría (Kárdex)")
