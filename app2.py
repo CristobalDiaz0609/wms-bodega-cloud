@@ -12,7 +12,6 @@ st.set_page_config(
 
 # ---------------------------------------------------------
 # CREDENCIALES Y ROLES DE ACCESO
-# USUARIO : {"password": "...", "rol": "admin" o "operario"}
 # ---------------------------------------------------------
 USUARIOS_PERMITIDOS = {
     "admin": {"password": "admin2026", "rol": "admin"},
@@ -32,6 +31,8 @@ if "rol_actual" not in st.session_state:
     st.session_state.rol_actual = ""
 if "mensaje_exito_reubicacion" not in st.session_state:
     st.session_state.mensaje_exito_reubicacion = None
+if "mensaje_exito_picking" not in st.session_state:
+    st.session_state.mensaje_exito_picking = None
 
 
 def login():
@@ -63,6 +64,7 @@ def logout():
     st.session_state.distancia_total_persistente = None
     st.session_state.operaciones_pendientes_picking = []
     st.session_state.mensaje_exito_reubicacion = None
+    st.session_state.mensaje_exito_picking = None
     st.rerun()
 
 
@@ -353,7 +355,6 @@ else:
         st.header("Reubicación y Traslado Interno de Productos")
         st.write("Mueve stock de una casilla a otra para optimizar espacio o consolidar cargas.")
 
-        # Muestra el mensaje verde de éxito si se acaba de completar un traslado
         if st.session_state.mensaje_exito_reubicacion:
             st.success(st.session_state.mensaje_exito_reubicacion)
             st.session_state.mensaje_exito_reubicacion = None
@@ -451,7 +452,6 @@ else:
                     btn_mover = st.button("🚀 Confirmar Reubicación", type="primary", use_container_width=True)
 
             if btn_mover:
-                # 1. ACTUALIZAR ORIGEN
                 if cant_a_mover == cant_disponible_origen:
                     ejecutar_query("DELETE FROM inventario WHERE id_inventario = %s", (id_inv_origen,))
                     ejecutar_query("UPDATE ubicaciones SET estado = 'Libre' WHERE id_ubicacion = %s", (ubi_origen,))
@@ -459,7 +459,6 @@ else:
                     nueva_cant_origen = cant_disponible_origen - cant_a_mover
                     ejecutar_query("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (nueva_cant_origen, id_inv_origen))
 
-                # 2. ACTUALIZAR DESTINO
                 inv_destino = obtener_df("SELECT id_inventario, cantidad FROM inventario WHERE id_ubicacion = %s", (ubi_destino,))
                 
                 if inv_destino.empty:
@@ -470,13 +469,11 @@ else:
                     id_inv_dest = int(inv_destino["id_inventario"].values[0])
                     ejecutar_query("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (nueva_cant_dest, id_inv_dest))
 
-                # 3. REGISTRAR EN KÁRDEX
                 ejecutar_query(
                     "INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad) VALUES ('ENTRADA', %s, %s, %s)",
                     (sku_origen, ubi_destino, cant_a_mover)
                 )
 
-                # Guardar mensaje verde de confirmación
                 st.session_state.mensaje_exito_reubicacion = (
                     f"✅ **¡Reubicación completada con éxito!** Se trasladaron correctamente **{cant_a_mover} unidad(es)** de **{sku_origen}** "
                     f"desde la casilla **{ubi_origen}** hacia **{ubi_destino}**."
@@ -484,10 +481,14 @@ else:
                 st.rerun()
 
     # ---------------------------------------------------------
-    # 4. PICKING / DESPACHO DE PEDIDOS
+    # 4. PICKING / DESPACHO DE PEDIDOS (TRANSACCIÓN ÚNICA SEGURA)
     # ---------------------------------------------------------
     elif menu == "🛒 Picking / Despacho":
         st.header("Motor de Picking y Despacho Multi-SKU (Ruta Óptima 2D)")
+
+        if st.session_state.mensaje_exito_picking:
+            st.success(st.session_state.mensaje_exito_picking)
+            st.session_state.mensaje_exito_picking = None
 
         if "hoja_ruta_persistente" not in st.session_state:
             st.session_state.hoja_ruta_persistente = None
@@ -713,48 +714,66 @@ else:
                         use_container_width=True,
                     ):
                         if st.session_state.operaciones_pendientes_picking:
-                            for (
-                                op
-                            ) in (
-                                st.session_state.operaciones_pendientes_picking
-                            ):
-                                if op["tipo"] == "DELETE":
-                                    ejecutar_query(
-                                        "DELETE FROM inventario WHERE"
-                                        " id_inventario = %s",
-                                        (op["id_inventario"],),
-                                    )
-                                    ejecutar_query(
-                                        "UPDATE ubicaciones SET estado ="
-                                        " 'Libre' WHERE id_ubicacion = %s",
-                                        (op["id_ubicacion"],),
-                                    )
-                                elif op["tipo"] == "UPDATE":
-                                    ejecutar_query(
-                                        "UPDATE inventario SET cantidad = %s"
-                                        " WHERE id_inventario = %s",
-                                        (
-                                            op["nueva_cantidad"],
-                                            op["id_inventario"],
-                                        ),
+                            try:
+                                conn = obtener_conexion()
+                                cursor = conn.cursor()
+
+                                for (
+                                    op
+                                ) in (
+                                    st.session_state.operaciones_pendientes_picking
+                                ):
+                                    if op["tipo"] == "DELETE":
+                                        cursor.execute(
+                                            "DELETE FROM inventario WHERE"
+                                            " id_inventario = %s",
+                                            (op["id_inventario"],),
+                                        )
+                                        cursor.execute(
+                                            "UPDATE ubicaciones SET estado ="
+                                            " 'Libre' WHERE id_ubicacion = %s",
+                                            (op["id_ubicacion"],),
+                                        )
+                                    elif op["tipo"] == "UPDATE":
+                                        cursor.execute(
+                                            "UPDATE inventario SET cantidad = %s"
+                                            " WHERE id_inventario = %s",
+                                            (
+                                                op["nueva_cantidad"],
+                                                op["id_inventario"],
+                                            ),
+                                        )
+
+                                    cursor.execute(
+                                        "INSERT INTO historial_movimientos"
+                                        " (tipo_movimiento, sku, id_ubicacion,"
+                                        " cantidad) VALUES ('DESPACHO', %s, %s,"
+                                        " %s)",
+                                        (op["sku"], op["id_ubicacion"], op["cantidad"]),
                                     )
 
-                                ejecutar_query(
-                                    "INSERT INTO historial_movimientos"
-                                    " (tipo_movimiento, sku, id_ubicacion,"
-                                    " cantidad) VALUES ('DESPACHO', %s, %s,"
-                                    " %s)",
-                                    (op["sku"], op["id_ubicacion"], op["cantidad"]),
+                                conn.commit()
+                                cursor.close()
+                                conn.close()
+
+                                st.session_state.hoja_ruta_persistente = None
+                                st.session_state.distancia_total_persistente = (
+                                    None
                                 )
+                                st.session_state.operaciones_pendientes_picking = (
+                                    []
+                                )
+                                st.session_state.mensaje_exito_picking = (
+                                    "🎉 ¡Picking confirmado con éxito! El"
+                                    " inventario ha sido actualizado"
+                                    " correctamente."
+                                )
+                                st.rerun()
 
-                        st.session_state.hoja_ruta_persistente = None
-                        st.session_state.distancia_total_persistente = None
-                        st.session_state.operaciones_pendientes_picking = []
-                        st.success(
-                            "🎉 ¡Picking confirmado con éxito! El inventario ha"
-                            " sido actualizado."
-                        )
-                        st.rerun()
+                            except Exception as e:
+                                st.error(
+                                    f"❌ Ocurrió un problema de conexión: {e}"
+                                )
 
     # ---------------------------------------------------------
     # 5. DASHBOARD & KPIS (EXCLUSIVO ADMIN)
