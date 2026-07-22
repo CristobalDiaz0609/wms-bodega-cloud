@@ -353,7 +353,6 @@ else:
         st.header("Reubicación y Traslado Interno de Productos")
         st.write("Mueve stock de una casilla a otra para optimizar espacio o consolidar cargas.")
 
-        # Obtener casillas que actualmente tienen stock
         df_origenes = obtener_df("""
             SELECT i.id_inventario, i.id_ubicacion, i.sku, i.cantidad, p.nombre, p.capacidad_por_casilla
             FROM inventario i
@@ -385,7 +384,6 @@ else:
                     df_origenes["display_origen"]
                 )
                 
-                # Extraer datos de la casilla origen elegida
                 ubi_origen = origen_sel_txt.split(" | ")[0]
                 row_origen = df_origenes[df_origenes["id_ubicacion"] == ubi_origen].iloc[0]
                 
@@ -405,7 +403,6 @@ else:
             with col_dest:
                 st.subheader("2. Casilla de Destino")
                 
-                # Buscar casillas destino válidas (libres o con el mismo SKU con espacio)
                 query_destinos = """
                     SELECT u.id_ubicacion, 
                            COALESCE(i.cantidad, 0) AS cantidad_actual,
@@ -451,11 +448,9 @@ else:
             if btn_mover:
                 # 1. ACTUALIZAR ORIGEN
                 if cant_a_mover == cant_disponible_origen:
-                    # Se vació la casilla entera
                     ejecutar_query("DELETE FROM inventario WHERE id_inventario = %s", (id_inv_origen,))
                     ejecutar_query("UPDATE ubicaciones SET estado = 'Libre' WHERE id_ubicacion = %s", (ubi_origen,))
                 else:
-                    # Quedan unidades en el origen
                     nueva_cant_origen = cant_disponible_origen - cant_a_mover
                     ejecutar_query("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (nueva_cant_origen, id_inv_origen))
 
@@ -463,19 +458,17 @@ else:
                 inv_destino = obtener_df("SELECT id_inventario, cantidad FROM inventario WHERE id_ubicacion = %s", (ubi_destino,))
                 
                 if inv_destino.empty:
-                    # La casilla estaba libre
                     ejecutar_query("INSERT INTO inventario (id_ubicacion, sku, cantidad) VALUES (%s, %s, %s)", (ubi_destino, sku_origen, cant_a_mover))
                     ejecutar_query("UPDATE ubicaciones SET estado = 'Ocupado' WHERE id_ubicacion = %s", (ubi_destino,))
                 else:
-                    # Consolidación
                     nueva_cant_dest = int(inv_destino["cantidad"].values[0]) + cant_a_mover
                     id_inv_dest = int(inv_destino["id_inventario"].values[0])
                     ejecutar_query("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (nueva_cant_dest, id_inv_dest))
 
-                # 3. REGISTRAR EN KÁRDEX
+                # 3. REGISTRAR EN KÁRDEX (USA EL ID DE UBICACIÓN DESTINO LIMPIO)
                 ejecutar_query(
                     "INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad) VALUES ('REUBICACION', %s, %s, %s)",
-                    (sku_origen, f"{ubi_origen} ➔ {ubi_destino}", cant_a_mover)
+                    (sku_origen, ubi_destino, cant_a_mover)
                 )
 
                 st.success(f"🎉 Reubicación exitosa: Se trasladaron {cant_a_mover} unidades de {sku_origen} desde {ubi_origen} hacia {ubi_destino}.")
