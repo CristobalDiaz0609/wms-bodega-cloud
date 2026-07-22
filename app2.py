@@ -522,17 +522,17 @@ elif menu == "📊 Dashboard & KPIs":
             use_container_width=True,
         )
 
-    # --- REPORTE DE PRODUCTOS SIN MOVIMIENTO (SLIDER DINÁMICO 3 A 20 DÍAS) ---
+    # --- REPORTE DE PRODUCTOS SIN MOVIMIENTO (SLIDER DINÁMICO 0 A 30 DÍAS) ---
     st.markdown("---")
     st.subheader("🧊 Reporte de SKUs Sin Movimiento (Baja Rotación / Stock Inactivo)")
 
     dias_inactivos_sel = st.slider(
         "🎚️ Seleccionar umbral de inactividad (Días sin movimiento):",
-        min_value=3,
+        min_value=0,
         max_value=30,
-        value=14,
+        value=0,
         step=1,
-        help="Mueve la barra para filtrar los productos con stock retenido que no registran entradas ni salidas."
+        help="Mueve la barra a 0 o 1 para ver el stock inactivo desde hoy o ayer."
     )
 
     df_inactivos = obtener_df("""
@@ -549,9 +549,9 @@ elif menu == "📊 Dashboard & KPIs":
     """, (dias_inactivos_sel,))
 
     if df_inactivos.empty:
-        st.success(f"✅ ¡Excelente! No hay SKUs con stock retenido e inactivo por más de {dias_inactivos_sel} días.")
+        st.success(f"✅ ¡Excelente! No hay SKUs con stock retenido e inactivo por {dias_inactivos_sel} días o más.")
     else:
-        st.warning(f"⚠️ Se encontraron **{len(df_inactivos)} SKU(s)** con stock guardado sin registrar ningún movimiento en más de **{dias_inactivos_sel} días**.")
+        st.warning(f"⚠️ Se encontraron **{len(df_inactivos)} SKU(s)** con stock guardado sin registrar ningún movimiento en **{dias_inactivos_sel} días o más**.")
 
         df_inactivos_display = df_inactivos.copy()
         df_inactivos_display["ultima_fecha_movimiento"] = df_inactivos_display["ultima_fecha_movimiento"].astype(str).replace("None", "Sin registros de movimiento")
