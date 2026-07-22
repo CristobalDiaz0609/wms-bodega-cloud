@@ -259,13 +259,15 @@ elif menu == "📥 Recepción e Ingreso":
                     st.rerun()
 
 # ---------------------------------------------------------
-# 3. PICKING / DESPACHO DE PEDIDOS (MULTI-SKU)
+# 3. PICKING / DESPACHO DE PEDIDOS (MULTI-SKU + RUTA POR METROS)
 # ---------------------------------------------------------
 elif menu == "🛒 Picking / Despacho":
-    st.header("Motor de Picking y Despacho Multi-SKU")
+    st.header("Motor de Picking y Despacho Multi-SKU (Ruta Óptima 2D)")
 
     if "hoja_ruta_persistente" not in st.session_state:
         st.session_state.hoja_ruta_persistente = None
+    if "distancia_total_persistente" not in st.session_state:
+        st.session_state.distancia_total_persistente = None
 
     df_inv = obtener_df("""
         SELECT i.sku, p.nombre, SUM(i.cantidad) as total_disponible
@@ -310,16 +312,20 @@ elif menu == "🛒 Picking / Despacho":
                         )
                         cantidades_solicitadas[sku_clean] = cant
 
-                btn_generar_ruta = st.form_submit_button("🚀 Generar Hoja de Ruta / Ejecutar Picking")
+                btn_generar_ruta = st.form_submit_button("🚀 Generar Hoja de Ruta Óptima")
 
                 if btn_generar_ruta:
-                    hoja_ruta = []
+                    puntos_extraccion = []
 
+                    # 1. Determinar de qué casillas se extraerá cada producto
                     for sku_clean, cant_solicitada in cantidades_solicitadas.items():
-                        df_casillas = obtener_df(
-                            "SELECT id_inventario, id_ubicacion, cantidad FROM inventario WHERE sku = %s ORDER BY cantidad ASC",
-                            (sku_clean,),
-                        )
+                        df_casillas = obtener_df("""
+                            SELECT i.id_inventario, i.id_ubicacion, i.cantidad, u.coord_x, u.coord_y
+                            FROM inventario i
+                            JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion
+                            WHERE i.sku = %s
+                            ORDER BY i.cantidad ASC
+                        """, (sku_clean,))
 
                         por_despachar = cant_solicitada
 
@@ -330,6 +336,8 @@ elif menu == "🛒 Picking / Despacho":
                             id_inv = row["id_inventario"]
                             ubi = row["id_ubicacion"]
                             cant_en_casilla = row["cantidad"]
+                            cx = row["coord_x"]
+                            cy = row["coord_y"]
 
                             if cant_en_casilla <= por_despachar:
                                 despacho_casilla = cant_en_casilla
@@ -346,27 +354,61 @@ elif menu == "🛒 Picking / Despacho":
                             )
 
                             por_despachar -= despacho_casilla
-                            hoja_ruta.append({
+                            puntos_extraccion.append({
                                 "SKU": sku_clean,
                                 "Ubicación": ubi,
-                                "Extraer": despacho_casilla
+                                "Extraer": despacho_casilla,
+                                "x": cx,
+                                "y": cy
                             })
 
-                    df_hoja_ruta = pd.DataFrame(hoja_ruta)
-                    if not df_hoja_ruta.empty:
-                        df_hoja_ruta = df_hoja_ruta.sort_values(by="Ubicación").reset_index(drop=True)
+                    # 2. ALGORITMO DE VECINO MÁS CERCANO (OPT. POR METROS RECORRIDOS)
+                    # Punto inicial: Despacho/Puerta en (0,0)
+                    pos_actual = (0, 0)
+                    ruta_ordenada = []
+                    distancia_total = 0.0
+
+                    pendientes = puntos_extraccion.copy()
+
+                    paso = 1
+                    while pendientes:
+                        # Buscar la casilla más cercana usando Distancia de Manhattan (|x1-x2| + |y1-y2|)
+                        mejor_idx = 0
+                        menor_dist = abs(pendientes[0]["x"] - pos_actual[0]) + abs(pendientes[0]["y"] - pos_actual[1])
+
+                        for i in range(1, len(pendientes)):
+                            dist = abs(pendientes[i]["x"] - pos_actual[0]) + abs(pendientes[i]["y"] - pos_actual[1])
+                            if dist < menor_dist:
+                                menor_dist = dist
+                                mejor_idx = i
+
+                        siguiente_punto = pendientes.pop(mejor_idx)
+                        distancia_total += menor_dist
+                        pos_actual = (siguiente_punto["x"], siguiente_punto["y"])
+
+                        siguiente_punto["Paso"] = paso
+                        siguiente_punto["Dist. Tramo (m)"] = menor_dist
+                        ruta_ordenada.append(siguiente_punto)
+                        paso += 1
+
+                    df_hoja_ruta = pd.DataFrame(ruta_ordenada)
+                    df_hoja_ruta = df_hoja_ruta[["Paso", "Ubicación", "SKU", "Extraer", "Dist. Tramo (m)", "x", "y"]]
 
                     st.session_state.hoja_ruta_persistente = df_hoja_ruta
-                    st.success("🎉 ¡Picking multi-producto completado con éxito!")
+                    st.session_state.distancia_total_persistente = distancia_total
+                    st.success("🎉 ¡Picking completado y ruta optimizada por metros!")
                     st.rerun()
 
         if st.session_state.hoja_ruta_persistente is not None:
             st.markdown("---")
-            st.subheader("📋 Hoja de Ruta Activa para Operador (Optimizada por Ubicación):")
+            st.subheader("📋 Hoja de Ruta Optimizada por Metros Recorridos:")
+            
+            st.info(f"📏 **Distancia Total Recorrida Estima:** {st.session_state.distancia_total_persistente:.1f} metros/unidades (Punto de inicio: Puerta (0,0))")
             st.dataframe(st.session_state.hoja_ruta_persistente, use_container_width=True)
 
             if st.button("🗑️ Limpiar / Finalizar Ruta"):
                 st.session_state.hoja_ruta_persistente = None
+                st.session_state.distancia_total_persistente = None
                 st.rerun()
 
 # ---------------------------------------------------------
