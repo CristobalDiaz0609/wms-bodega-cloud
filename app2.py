@@ -259,7 +259,7 @@ elif menu == "📥 Recepción e Ingreso":
                     st.rerun()
 
 # ---------------------------------------------------------
-# 3. PICKING / DESPACHO DE PEDIDOS (MULTI-SKU + RUTA POR METROS)
+# 3. PICKING / DESPACHO DE PEDIDOS (MULTI-SKU + RUTA ÓPTIMA + DESCUENTO POST-CONFIRMACIÓN)
 # ---------------------------------------------------------
 elif menu == "🛒 Picking / Despacho":
     st.header("Motor de Picking y Despacho Multi-SKU (Ruta Óptima 2D)")
@@ -268,6 +268,8 @@ elif menu == "🛒 Picking / Despacho":
         st.session_state.hoja_ruta_persistente = None
     if "distancia_total_persistente" not in st.session_state:
         st.session_state.distancia_total_persistente = None
+    if "operaciones_pendientes_picking" not in st.session_state:
+        st.session_state.operaciones_pendientes_picking = None
 
     df_inv = obtener_df("""
         SELECT i.sku, p.nombre, SUM(i.cantidad) as total_disponible
@@ -316,8 +318,9 @@ elif menu == "🛒 Picking / Despacho":
 
                 if btn_generar_ruta:
                     puntos_extraccion = []
+                    operaciones_db = []
 
-                    # 1. Determinar de qué casillas se extraerá cada producto
+                    # SIMULAR Y PLANIFICAR SIN DESCONTAR EN LA BD
                     for sku_clean, cant_solicitada in cantidades_solicitadas.items():
                         df_casillas = obtener_df("""
                             SELECT i.id_inventario, i.id_ubicacion, i.cantidad, u.coord_x, u.coord_y
@@ -341,17 +344,24 @@ elif menu == "🛒 Picking / Despacho":
 
                             if cant_en_casilla <= por_despachar:
                                 despacho_casilla = cant_en_casilla
-                                ejecutar_query("DELETE FROM inventario WHERE id_inventario = %s", (id_inv,))
-                                ejecutar_query("UPDATE ubicaciones SET estado = 'Libre' WHERE id_ubicacion = %s", (ubi,))
+                                operaciones_db.append({
+                                    "tipo": "DELETE",
+                                    "id_inventario": id_inv,
+                                    "id_ubicacion": ubi,
+                                    "sku": sku_clean,
+                                    "cantidad": despacho_casilla
+                                })
                             else:
                                 despacho_casilla = por_despachar
                                 nueva_cant = cant_en_casilla - por_despachar
-                                ejecutar_query("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (nueva_cant, id_inv))
-
-                            ejecutar_query(
-                                "INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad) VALUES ('DESPACHO', %s, %s, %s)",
-                                (sku_clean, ubi, despacho_casilla),
-                            )
+                                operaciones_db.append({
+                                    "tipo": "UPDATE",
+                                    "id_inventario": id_inv,
+                                    "nueva_cantidad": nueva_cant,
+                                    "id_ubicacion": ubi,
+                                    "sku": sku_clean,
+                                    "cantidad": despacho_casilla
+                                })
 
                             por_despachar -= despacho_casilla
                             puntos_extraccion.append({
@@ -362,17 +372,15 @@ elif menu == "🛒 Picking / Despacho":
                                 "y": cy
                             })
 
-                    # 2. ALGORITMO DE VECINO MÁS CERCANO (OPT. POR METROS RECORRIDOS)
-                    # Punto inicial: Despacho/Puerta en (0,0)
+                    # OPTIMIZACIÓN DE RUTA POR VECINO MÁS CERCANO (0,0)
                     pos_actual = (0, 0)
                     ruta_ordenada = []
                     distancia_total = 0.0
 
                     pendientes = puntos_extraccion.copy()
-
                     paso = 1
+
                     while pendientes:
-                        # Buscar la casilla más cercana usando Distancia de Manhattan (|x1-x2| + |y1-y2|)
                         mejor_idx = 0
                         menor_dist = abs(pendientes[0]["x"] - pos_actual[0]) + abs(pendientes[0]["y"] - pos_actual[1])
 
@@ -396,20 +404,48 @@ elif menu == "🛒 Picking / Despacho":
 
                     st.session_state.hoja_ruta_persistente = df_hoja_ruta
                     st.session_state.distancia_total_persistente = distancia_total
-                    st.success("🎉 ¡Picking completado y ruta optimizada por metros!")
+                    st.session_state.operaciones_pendientes_picking = operaciones_db
+                    st.info("📋 Ruta generada exitosamente. Revisa la ruta y presiona 'Confirmar y Finalizar' para descontar del inventario.")
                     st.rerun()
 
+        # VISTA DE HOJA DE RUTA CON BOTONES SEPARADOS
         if st.session_state.hoja_ruta_persistente is not None:
             st.markdown("---")
-            st.subheader("📋 Hoja de Ruta Optimizada por Metros Recorridos:")
+            st.subheader("📋 Hoja de Ruta Activa para Operador:")
             
-            st.info(f"📏 **Distancia Total Recorrida Estima:** {st.session_state.distancia_total_persistente:.1f} metros/unidades (Punto de inicio: Puerta (0,0))")
+            st.info(f"📏 **Distancia Total Recorrida Estimada:** {st.session_state.distancia_total_persistente:.1f} metros/unidades (Punto de inicio: Puerta (0,0))")
             st.dataframe(st.session_state.hoja_ruta_persistente, use_container_width=True)
 
-            if st.button("🗑️ Limpiar / Finalizar Ruta"):
-                st.session_state.hoja_ruta_persistente = None
-                st.session_state.distancia_total_persistente = None
-                st.rerun()
+            col_btn1, col_btn2 = st.columns(2)
+
+            with col_btn1:
+                if st.button("❌ Cancelar / Limpiar Ruta (Sin Descontar Stock)", use_container_width=True):
+                    st.session_state.hoja_ruta_persistente = None
+                    st.session_state.distancia_total_persistente = None
+                    st.session_state.operaciones_pendientes_picking = None
+                    st.warning("⚠️ Ruta cancelada. El inventario no sufrió modificaciones.")
+                    st.rerun()
+
+            with col_btn2:
+                if st.button("✅ Confirmar y Finalizar Picking (Descontar Stock)", type="primary", use_container_width=True):
+                    # EJECUCIÓN FINAL EN LA BASE DE DATOS
+                    for op in st.session_state.operaciones_pendientes_picking:
+                        if op["tipo"] == "DELETE":
+                            ejecutar_query("DELETE FROM inventario WHERE id_inventario = %s", (op["id_inventario"],))
+                            ejecutar_query("UPDATE ubicaciones SET estado = 'Libre' WHERE id_ubicacion = %s", (op["id_ubicacion"],))
+                        elif op["tipo"] == "UPDATE":
+                            ejecutar_query("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (op["nueva_cantidad"], op["id_inventario"]))
+
+                        ejecutar_query(
+                            "INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad) VALUES ('DESPACHO', %s, %s, %s)",
+                            (op["sku"], op["id_ubicacion"], op["cantidad"]),
+                        )
+
+                    st.session_state.hoja_ruta_persistente = None
+                    st.session_state.distancia_total_persistente = None
+                    st.session_state.operaciones_pendientes_picking = None
+                    st.success("🎉 ¡Picking confirmado con éxito! El inventario ha sido actualizado.")
+                    st.rerun()
 
 # ---------------------------------------------------------
 # 4. DASHBOARD & KPIS
