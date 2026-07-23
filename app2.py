@@ -119,6 +119,12 @@ else:
         cursor.close()
         conn.close()
 
+    # ---------------------------------------------------------
+    # CALLBACK PARA CAMBIO INSTANTÁNEO DE BODEGA
+    # ---------------------------------------------------------
+    def cambiar_bodega_callback():
+        st.session_state.bodega_activa = st.session_state.selector_bodega_temp
+
     # BARRA LATERAL
     rol_label = "👑 Administrador" if st.session_state.rol_actual == "admin" else "👷 Operario"
     st.sidebar.markdown(f"👤 **Usuario:** `{st.session_state.usuario_actual}`")
@@ -131,13 +137,15 @@ else:
         st.sidebar.subheader("🏢 Seleccionar Bodega Activa")
         opciones_bodega = list(dict_bodegas.keys())
         idx_def = opciones_bodega.index(st.session_state.bodega_activa) if st.session_state.bodega_activa in opciones_bodega else 0
-        bodega_sel = st.sidebar.selectbox(
+        
+        st.sidebar.selectbox(
             "Filtrar Vista por Bodega:",
             opciones_bodega,
             format_func=lambda x: f"{x} - {dict_bodegas.get(x, '')}",
-            index=idx_def
+            index=idx_def,
+            key="selector_bodega_temp",
+            on_change=cambiar_bodega_callback
         )
-        st.session_state.bodega_activa = bodega_sel
     else:
         st.sidebar.markdown(f"🏢 **Bodega Asignada:** `{st.session_state.bodega_usuario}` - {dict_bodegas.get(st.session_state.bodega_usuario, '')}")
         st.session_state.bodega_activa = st.session_state.bodega_usuario
