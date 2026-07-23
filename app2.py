@@ -216,11 +216,12 @@ else:
     menu = st.sidebar.radio("Navegación / Módulos", modulos_disponibles)
 
     # ---------------------------------------------------------
-    # 1. MAPA 2D & ESTADO DE UBICACIONES
+    # 1. MAPA 2D & ESTADO DE UBICACIONES (CON BUSCADOR GLOBAL DE SKU)
     # ---------------------------------------------------------
     if menu == "🗺️ Mapa 2D & Estado":
         st.header("Mapa de Ocupación Física 2D")
 
+        # Cargar datos base del mapa
         query = """
         SELECT u.id_ubicacion, u.coord_x, u.coord_y, u.estado,
                COALESCE(i.sku, 'Vacío') AS sku,
@@ -238,11 +239,78 @@ else:
                 df_mapa["cantidad"] / df_mapa["capacidad"]
             ) * 100
 
+            # --- BUSCADOR / FILTRO DE SKU GLOBAL ---
+            df_skus_existentes = (
+                df_mapa[df_mapa["sku"] != "Vacío"][["sku", "producto"]]
+                .drop_duplicates()
+                .sort_values(by="sku")
+            )
+
+            opciones_buscador = ["🔍 Mostrar Todos los Productos"] + (
+                df_skus_existentes["sku"] + " - " + df_skus_existentes["producto"]
+            ).tolist()
+
+            col_search1, col_search2 = st.columns([2, 1])
+
+            with col_search1:
+                sku_buscado_sel = st.selectbox(
+                    "📍 Buscador Global de Producto (Ubicador de SKU en Mapa):",
+                    opciones_buscador,
+                    help="Selecciona un producto para visualizar en qué casillas de la bodega se encuentra ubicado.",
+                )
+
+            # Lógica de filtrado y visualización
+            df_mapa_plot = df_mapa.copy()
+
+            if sku_buscado_sel != "🔍 Mostrar Todos los Productos":
+                sku_clean_busqueda = sku_buscado_sel.split(" - ")[0]
+
+                # Casillas con el SKU buscado
+                coincidencias = df_mapa_plot[df_mapa_plot["sku"] == sku_clean_busqueda]
+                total_encontrado_unidades = coincidencias["cantidad"].sum()
+                total_casillas_encontradas = len(coincidencias)
+
+                with col_search2:
+                    st.metric(
+                        label=f"Ubicaciones para {sku_clean_busqueda}",
+                        value=f"{total_casillas_encontradas} Casilla(s)",
+                        delta=f"{total_encontrado_unidades} Unidades en Total",
+                    )
+
+                # Estado gráfico para resaltar las casillas encontradas
+                df_mapa_plot["Estado_Grafico"] = df_mapa_plot.apply(
+                    lambda r: r["estado"]
+                    if r["sku"] == sku_clean_busqueda
+                    else "Otro / Sin Coincidencia",
+                    axis=1,
+                )
+                df_mapa_plot["Tamaño_Punto"] = df_mapa_plot.apply(
+                    lambda r: 35 if r["sku"] == sku_clean_busqueda else 18, axis=1
+                )
+
+                color_map = {
+                    "Libre": "#2ecc71",
+                    "Ocupado": "#e74c3c",
+                    "Inhabilitado": "#95a5a6",
+                    "Otro / Sin Coincidencia": "#e0e0e0",
+                }
+            else:
+                df_mapa_plot["Estado_Grafico"] = df_mapa_plot["estado"]
+                df_mapa_plot["Tamaño_Punto"] = 28
+                color_map = {
+                    "Libre": "#2ecc71",
+                    "Ocupado": "#e74c3c",
+                    "Inhabilitado": "#95a5a6",
+                }
+
+            # Renderizar gráfico Plotly 2D
             fig = px.scatter(
-                df_mapa,
+                df_mapa_plot,
                 x="coord_x",
                 y="coord_y",
-                color="estado",
+                color="Estado_Grafico",
+                size="Tamaño_Punto",
+                size_max=35,
                 hover_name="id_ubicacion",
                 hover_data=[
                     "sku",
@@ -252,26 +320,32 @@ else:
                     "Ocupacion_%",
                 ],
                 text="id_ubicacion",
-                color_discrete_map={
-                    "Libre": "#2ecc71",
-                    "Ocupado": "#e74c3c",
-                    "Inhabilitado": "#95a5a6",
-                },
-                title="Distribución Espacial de Casillas",
+                color_discrete_map=color_map,
+                title="Distribución Espacial de Casillas (Vista Física Bodega)",
             )
             fig.update_traces(
-                marker=dict(size=28, line=dict(width=1, color="DarkSlateGrey")),
+                line=dict(width=1, color="DarkSlateGrey"),
                 textposition="top center",
             )
             fig.update_layout(
                 xaxis=dict(tickmode="linear", dtick=1),
                 yaxis=dict(tickmode="linear", dtick=1),
+                showlegend=True,
             )
             st.plotly_chart(fig, use_container_width=True)
 
+            # Detalle en tabla
             st.subheader("Detalle de Ubicaciones")
+
+            if sku_buscado_sel != "🔍 Mostrar Todos los Productos":
+                df_tabla_display = df_mapa[
+                    df_mapa["sku"] == sku_buscado_sel.split(" - ")[0]
+                ]
+            else:
+                df_tabla_display = df_mapa
+
             st.dataframe(
-                df_mapa[[
+                df_tabla_display[[
                     "id_ubicacion",
                     "estado",
                     "sku",
@@ -523,7 +597,6 @@ else:
                     btn_mover = st.button("🚀 Confirmar Reubicación", type="primary", use_container_width=True)
 
             if btn_mover:
-                # 1. ACTUALIZAR CASILLA DE ORIGEN
                 if cant_a_mover == cant_disponible_origen:
                     ejecutar_query("DELETE FROM inventario WHERE id_inventario = %s", (id_inv_origen,))
                     ejecutar_query("UPDATE ubicaciones SET estado = 'Libre' WHERE id_ubicacion = %s", (ubi_origen,))
@@ -531,7 +604,6 @@ else:
                     nueva_cant_origen = cant_disponible_origen - cant_a_mover
                     ejecutar_query("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (nueva_cant_origen, id_inv_origen))
 
-                # 2. ACTUALIZAR CASILLA DE DESTINO
                 inv_destino = obtener_df("SELECT id_inventario, cantidad FROM inventario WHERE id_ubicacion = %s", (ubi_destino,))
                 
                 if inv_destino.empty:
@@ -542,8 +614,6 @@ else:
                     id_inv_dest = int(inv_destino["id_inventario"].values[0])
                     ejecutar_query("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (nueva_cant_dest, id_inv_dest))
 
-                # NO SE REGISTRA EN EL HISTORIAL PARA NO SALIR COMO 'ENTRADA' NI AFECTAR MÉTRICAS DE TRAZABILIDAD
-
                 st.session_state.mensaje_exito_reubicacion = (
                     f"✅ **¡Reubicación completada con éxito!** Se trasladaron correctamente **{cant_a_mover} unidad(es)** de **{sku_origen}** "
                     f"desde la casilla **{ubi_origen}** hacia **{ubi_destino}**."
@@ -551,7 +621,7 @@ else:
                 st.rerun()
 
     # ---------------------------------------------------------
-    # 4. PICKING / DESPACHO DE PEDIDOS (CON CALLBACK SEGURO)
+    # 4. PICKING / DESPACHO DE PEDIDOS
     # ---------------------------------------------------------
     elif menu == "🛒 Picking / Despacho":
         st.header("Motor de Picking y Despacho Multi-SKU (Ruta Óptima 2D)")
