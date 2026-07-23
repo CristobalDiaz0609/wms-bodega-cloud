@@ -12,6 +12,7 @@ st.set_page_config(
 
 # ---------------------------------------------------------
 # CREDENCIALES Y ROLES DE ACCESO
+# USUARIO : {"password": "...", "rol": "admin" o "operario"}
 # ---------------------------------------------------------
 USUARIOS_PERMITIDOS = {
     "admin": {"password": "admin2026", "rol": "admin"},
@@ -29,6 +30,10 @@ if "usuario_actual" not in st.session_state:
     st.session_state.usuario_actual = ""
 if "rol_actual" not in st.session_state:
     st.session_state.rol_actual = ""
+
+# Variables para mensajes de éxito persistentes
+if "mensaje_exito_ingreso" not in st.session_state:
+    st.session_state.mensaje_exito_ingreso = None
 if "mensaje_exito_reubicacion" not in st.session_state:
     st.session_state.mensaje_exito_reubicacion = None
 if "mensaje_exito_picking" not in st.session_state:
@@ -63,6 +68,7 @@ def logout():
     st.session_state.hoja_ruta_persistente = None
     st.session_state.distancia_total_persistente = None
     st.session_state.operaciones_pendientes_picking = []
+    st.session_state.mensaje_exito_ingreso = None
     st.session_state.mensaje_exito_reubicacion = None
     st.session_state.mensaje_exito_picking = None
     st.rerun()
@@ -217,10 +223,15 @@ else:
             )
 
     # ---------------------------------------------------------
-    # 2. RECEPCIÓN E INGRESO DE MERCADERÍA
+    # 2. RECEPCIÓN E INGRESO DE MERCADERÍA (CON MENSAJE VERDE DE ÉXITO)
     # ---------------------------------------------------------
     elif menu == "📥 Recepción e Ingreso":
         st.header("Ingreso de Stock a Bodega")
+
+        # Desplegar mensaje de confirmación si se acaba de registrar un ingreso
+        if st.session_state.mensaje_exito_ingreso:
+            st.success(st.session_state.mensaje_exito_ingreso)
+            st.session_state.mensaje_exito_ingreso = None
 
         df_prods = obtener_df(
             "SELECT sku, nombre, capacidad_por_casilla FROM productos"
@@ -342,9 +353,10 @@ else:
                             (sku_limpio, ubi_limpia, cantidad_ingreso),
                         )
 
-                        st.success(
-                            f"✅ Se ingresaron {cantidad_ingreso} unidades de"
-                            f" {sku_limpio} en la casilla {ubi_limpia}."
+                        # Guardar el mensaje verde de éxito
+                        st.session_state.mensaje_exito_ingreso = (
+                            f"🎉 **¡Ingreso completado con éxito!** Se registraron **{cantidad_ingreso} unidad(es)** de "
+                            f"**{sku_limpio}** en la casilla **{ubi_limpia}**."
                         )
                         st.rerun()
 
@@ -481,7 +493,7 @@ else:
                 st.rerun()
 
     # ---------------------------------------------------------
-    # 4. PICKING / DESPACHO DE PEDIDOS (TRANSACCIÓN ÚNICA SEGURA)
+    # 4. PICKING / DESPACHO DE PEDIDOS
     # ---------------------------------------------------------
     elif menu == "🛒 Picking / Despacho":
         st.header("Motor de Picking y Despacho Multi-SKU (Ruta Óptima 2D)")
@@ -714,66 +726,48 @@ else:
                         use_container_width=True,
                     ):
                         if st.session_state.operaciones_pendientes_picking:
-                            try:
-                                conn = obtener_conexion()
-                                cursor = conn.cursor()
-
-                                for (
-                                    op
-                                ) in (
-                                    st.session_state.operaciones_pendientes_picking
-                                ):
-                                    if op["tipo"] == "DELETE":
-                                        cursor.execute(
-                                            "DELETE FROM inventario WHERE"
-                                            " id_inventario = %s",
-                                            (op["id_inventario"],),
-                                        )
-                                        cursor.execute(
-                                            "UPDATE ubicaciones SET estado ="
-                                            " 'Libre' WHERE id_ubicacion = %s",
-                                            (op["id_ubicacion"],),
-                                        )
-                                    elif op["tipo"] == "UPDATE":
-                                        cursor.execute(
-                                            "UPDATE inventario SET cantidad = %s"
-                                            " WHERE id_inventario = %s",
-                                            (
-                                                op["nueva_cantidad"],
-                                                op["id_inventario"],
-                                            ),
-                                        )
-
-                                    cursor.execute(
-                                        "INSERT INTO historial_movimientos"
-                                        " (tipo_movimiento, sku, id_ubicacion,"
-                                        " cantidad) VALUES ('DESPACHO', %s, %s,"
-                                        " %s)",
-                                        (op["sku"], op["id_ubicacion"], op["cantidad"]),
+                            for (
+                                op
+                            ) in (
+                                st.session_state.operaciones_pendientes_picking
+                            ):
+                                if op["tipo"] == "DELETE":
+                                    ejecutar_query(
+                                        "DELETE FROM inventario WHERE"
+                                        " id_inventario = %s",
+                                        (op["id_inventario"],),
+                                    )
+                                    ejecutar_query(
+                                        "UPDATE ubicaciones SET estado ="
+                                        " 'Libre' WHERE id_ubicacion = %s",
+                                        (op["id_ubicacion"],),
+                                    )
+                                elif op["tipo"] == "UPDATE":
+                                    ejecutar_query(
+                                        "UPDATE inventario SET cantidad = %s"
+                                        " WHERE id_inventario = %s",
+                                        (
+                                            op["nueva_cantidad"],
+                                            op["id_inventario"],
+                                        ),
                                     )
 
-                                conn.commit()
-                                cursor.close()
-                                conn.close()
+                                ejecutar_query(
+                                    "INSERT INTO historial_movimientos"
+                                    " (tipo_movimiento, sku, id_ubicacion,"
+                                    " cantidad) VALUES ('DESPACHO', %s, %s,"
+                                    " %s)",
+                                    (op["sku"], op["id_ubicacion"], op["cantidad"]),
+                                )
 
-                                st.session_state.hoja_ruta_persistente = None
-                                st.session_state.distancia_total_persistente = (
-                                    None
-                                )
-                                st.session_state.operaciones_pendientes_picking = (
-                                    []
-                                )
-                                st.session_state.mensaje_exito_picking = (
-                                    "🎉 ¡Picking confirmado con éxito! El"
-                                    " inventario ha sido actualizado"
-                                    " correctamente."
-                                )
-                                st.rerun()
-
-                            except Exception as e:
-                                st.error(
-                                    f"❌ Ocurrió un problema de conexión: {e}"
-                                )
+                        st.session_state.hoja_ruta_persistente = None
+                        st.session_state.distancia_total_persistente = None
+                        st.session_state.operaciones_pendientes_picking = []
+                        st.session_state.mensaje_exito_picking = (
+                            "🎉 ¡Picking confirmado con éxito! El inventario ha"
+                            " sido actualizado correctamente."
+                        )
+                        st.rerun()
 
     # ---------------------------------------------------------
     # 5. DASHBOARD & KPIS (EXCLUSIVO ADMIN)
