@@ -595,10 +595,16 @@ else:
 
     # DASHBOARD
     elif menu == "📊 Dashboard & KPIs":
-        st.header(f"Analítica de Operación - {st.session_state.bodega_activa}")
+        st.header(f"Analítica de Operación y Reportes - {st.session_state.bodega_activa}")
+
+        # ---------------------------------------------------------
+        # BLOQUE 1: MÉTRICAS PRINCIPALES DE INVENTARIO
+        # ---------------------------------------------------------
+        st.subheader("📌 Métricas Principales de Inventario")
 
         total_casillas = obtener_df("SELECT COUNT(*) as t FROM ubicaciones WHERE id_bodega = %s", (st.session_state.bodega_activa,))["t"].values[0] or 1
         casillas_ocupadas = obtener_df("SELECT COUNT(*) as t FROM ubicaciones WHERE estado = 'Ocupado' AND id_bodega = %s", (st.session_state.bodega_activa,))["t"].values[0]
+        casillas_libres = total_casillas - casillas_ocupadas
 
         stock_actual = obtener_df("""
             SELECT COALESCE(SUM(i.cantidad), 0) as t 
@@ -607,14 +613,196 @@ else:
             WHERE u.id_bodega = %s
         """, (st.session_state.bodega_activa,))["t"].values[0]
 
+        capacidad_total_bodega = obtener_df("""
+            SELECT COALESCE(SUM(p.capacidad_por_casilla), 500) as t 
+            FROM ubicaciones u 
+            LEFT JOIN inventario i ON u.id_ubicacion = i.id_ubicacion
+            LEFT JOIN productos p ON i.sku = p.sku 
+            WHERE u.id_bodega = %s
+        """, (st.session_state.bodega_activa,))["t"].values[0] or 500
+
         total_skus = obtener_df("SELECT COUNT(*) as t FROM productos")["t"].values[0]
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total SKUs Registrados", f"{total_skus} Productos")
-        col2.metric("Total Unidades en Stock", f"{stock_actual} Un.")
-        col3.metric("Ocupación de Casillas", f"{(casillas_ocupadas/total_casillas)*100:.1f}%", f"{casillas_ocupadas}/{total_casillas} Casillas")
+        pct_casillas = (casillas_ocupadas / total_casillas) * 100
+        pct_volumétrica = (stock_actual / capacidad_total_bodega) * 100
+
+        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+        kpi1.metric("Total SKUs Registrados", f"{total_skus} Productos")
+        kpi2.metric("Total Unidades en Stock", f"{stock_actual:.1f} Un.")
+        kpi3.metric("Ocupación de Casillas", f"{pct_casillas:.1f}%", f"↑ {casillas_ocupadas}/{total_casillas} Casillas")
+        kpi4.metric("Ocupación Volumétrica", f"{pct_volumétrica:.1f}%", f"↑ Cap. Máx: {capacidad_total_bodega:.1f}")
 
         st.markdown("---")
+
+        # ---------------------------------------------------------
+        # BLOQUE 2: RENDIMIENTO DE PICKING / DESPACHOS
+        # ---------------------------------------------------------
+        st.subheader("🛒 Rendimiento de Picking / Despachos")
+
+        picking_mes_actual = obtener_df("""
+            SELECT COALESCE(SUM(cantidad), 0) as t 
+            FROM historial_movimientos 
+            WHERE tipo_movimiento = 'DESPACHO' AND id_bodega = %s 
+              AND MONTH(fecha_hora) = MONTH(CURRENT_DATE()) 
+              AND YEAR(fecha_hora) = YEAR(CURRENT_DATE())
+        """, (st.session_state.bodega_activa,))["t"].values[0]
+
+        picking_mes_pasado = obtener_df("""
+            SELECT COALESCE(SUM(cantidad), 0) as t 
+            FROM historial_movimientos 
+            WHERE tipo_movimiento = 'DESPACHO' AND id_bodega = %s 
+              AND MONTH(fecha_hora) = MONTH(CURRENT_DATE() - INTERVAL 1 MONTH) 
+              AND YEAR(fecha_hora) = YEAR(CURRENT_DATE() - INTERVAL 1 MONTH)
+        """, (st.session_state.bodega_activa,))["t"].values[0]
+
+        diff_picking = picking_mes_actual - picking_mes_pasado
+        delta_str = f"↑ +{diff_picking:.0f} Unid. vs Mes Pasado" if diff_picking >= 0 else f"↓ {diff_picking:.0f} Unid. vs Mes Pasado"
+
+        p_col1, p_col2, p_col3 = st.columns(3)
+        p_col1.metric("Picking Mes Actual", f"{picking_mes_actual:.0f} Unidades", delta_str)
+        p_col2.metric("Picking Mes Pasado", f"{picking_mes_pasado:.0f} Unidades")
+        p_col3.metric("Casillas Disponibles / Libres", f"{casillas_libres}")
+
+        st.markdown("---")
+
+        # ---------------------------------------------------------
+        # BLOQUE 3: TENDENCIA DIARIA DE PICKING (DÍAS 1 AL 31)
+        # ---------------------------------------------------------
+        st.subheader("📈 Tendencia Diaria de Picking (Días 1 al 31)")
+
+        df_picking_diario = obtener_df("""
+            SELECT DAY(fecha_hora) AS dia,
+                   SUM(CASE WHEN MONTH(fecha_hora) = MONTH(CURRENT_DATE()) THEN cantidad ELSE 0 END) AS Mes_Actual,
+                   SUM(CASE WHEN MONTH(fecha_hora) = MONTH(CURRENT_DATE() - INTERVAL 1 MONTH) THEN cantidad ELSE 0 END) AS Mes_Anterior
+            FROM historial_movimientos
+            WHERE tipo_movimiento = 'DESPACHO' AND id_bodega = %s
+            GROUP BY DAY(fecha_hora)
+        """, (st.session_state.bodega_activa,))
+
+        # Crear plantilla completa para los 31 días del mes
+        df_31_dias = pd.DataFrame({"dia": list(range(1, 32))})
+        if not df_picking_diario.empty:
+            df_chart_picking = pd.merge(df_31_dias, df_picking_diario, on="dia", how="left").fillna(0)
+        else:
+            df_chart_picking = df_31_dias.copy()
+            df_chart_picking["Mes_Actual"] = 0
+            df_chart_picking["Mes_Anterior"] = 0
+
+        df_chart_melted = df_chart_picking.melt(
+            id_vars=["dia"], 
+            value_vars=["Mes_Actual", "Mes_Anterior"],
+            var_name="Periodo", 
+            value_name="Unidades Despachadas"
+        )
+        df_chart_melted["Periodo"] = df_chart_melted["Periodo"].replace({"Mes_Actual": "Mes Actual", "Mes_Anterior": "Mes Anterior"})
+
+        fig_picking_line = px.line(
+            df_chart_melted,
+            x="dia",
+            y="Unidades Despachadas",
+            color="Periodo",
+            markers=True,
+            title="Evolución del Picking Diario (Comparativo Mes Actual vs Mes Anterior)",
+            labels={"dia": "Día del Mes", "Unidades Despachadas": "Unidades Despachadas"},
+            color_discrete_map={"Mes Actual": "#2980b9", "Mes Anterior": "#bdc3c7"}
+        )
+        fig_picking_line.update_layout(height=400, xaxis=dict(tickmode="linear", dtick=1))
+        st.plotly_chart(fig_picking_line, use_container_width=True)
+
+        st.markdown("---")
+
+        # ---------------------------------------------------------
+        # BLOQUE 4: STOCK POR PRODUCTO Y OCUPACIÓN DE CASILLAS
+        # ---------------------------------------------------------
+        col_g1, col_g2 = st.columns(2)
+
+        with col_g1:
+            st.subheader("📦 Stock Actual por Producto")
+            df_stock_prod = obtener_df("""
+                SELECT p.nombre, SUM(i.cantidad) AS total_unidades
+                FROM inventario i
+                JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion
+                JOIN productos p ON i.sku = p.sku
+                WHERE u.id_bodega = %s
+                GROUP BY p.nombre
+                ORDER BY total_unidades DESC
+            """, (st.session_state.bodega_activa,))
+
+            if df_stock_prod.empty:
+                st.info("No hay inventario registrado en esta bodega.")
+            else:
+                fig_barras = px.bar(
+                    df_stock_prod,
+                    x="nombre",
+                    y="total_unidades",
+                    text="total_unidades",
+                    labels={"nombre": "Producto", "total_unidades": "Unidades"},
+                    color="total_unidades",
+                    color_continuous_scale="Blues"
+                )
+                fig_barras.update_traces(textposition="outside")
+                fig_barras.update_layout(height=380, showlegend=False)
+                st.plotly_chart(fig_barras, use_container_width=True)
+
+        with col_g2:
+            st.subheader("🎯 Ocupación Física de Casillas")
+            df_estados = obtener_df("""
+                SELECT estado, COUNT(*) as cantidad
+                FROM ubicaciones
+                WHERE id_bodega = %s
+                GROUP BY estado
+            """, (st.session_state.bodega_activa,))
+
+            if df_estados.empty:
+                st.info("No hay casillas registradas.")
+            else:
+                fig_pie = px.pie(
+                    df_estados,
+                    names="estado",
+                    values="cantidad",
+                    hole=0.4,
+                    color="estado",
+                    color_discrete_map={"Libre": "#2ecc71", "Ocupado": "#e74c3c", "Inhabilitado": "#95a5a6"}
+                )
+                fig_pie.update_traces(textinfo="percent+label")
+                fig_pie.update_layout(height=380)
+                st.plotly_chart(fig_pie, use_container_width=True)
+
+        st.markdown("---")
+
+        # ---------------------------------------------------------
+        # BLOQUE 5: REPORTES DE SKUs SIN MOVIMIENTO (BAJA ROTACIÓN)
+        # ---------------------------------------------------------
+        st.subheader("🧊 Reporte de SKUs Sin Movimiento (Baja Rotación / Stock Inactivo)")
+
+        dias_umbral = st.slider("🗿 Seleccionar umbral de inactividad (Días sin movimiento):", min_value=0, max_value=90, value=0)
+
+        query_inactivos = """
+            SELECT i.sku, p.nombre, SUM(i.cantidad) AS stock_actual,
+                   COALESCE(MAX(h.fecha_hora), 'Sin Movimientos Registrados') AS ultima_fecha_movimiento,
+                   COALESCE(DATEDIFF(CURRENT_DATE(), MAX(h.fecha_hora)), 999) AS dias_sin_movimiento
+            FROM inventario i
+            JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion
+            JOIN productos p ON i.sku = p.sku
+            LEFT JOIN historial_movimientos h ON i.sku = h.sku AND h.id_bodega = %s
+            WHERE u.id_bodega = %s
+            GROUP BY i.sku, p.nombre
+            HAVING dias_sin_movimiento >= %s
+            ORDER BY dias_sin_movimiento DESC;
+        """
+        df_inactivos = obtener_df(query_inactivos, (st.session_state.bodega_activa, st.session_state.bodega_activa, dias_umbral))
+
+        if df_inactivos.empty:
+            st.success(f"🎉 ¡Excelente! No hay SKUs con más de {dias_umbral} días sin movimiento en {st.session_state.bodega_activa}.")
+        else:
+            st.warning(f"⚠️ Se encontraron {len(df_inactivos)} SKU(s) con stock guardado sin registrar ningún movimiento en {dias_umbral} días o más.")
+            st.dataframe(df_inactivos[["sku", "nombre", "stock_actual", "ultima_fecha_movimiento", "dias_sin_movimiento"]], use_container_width=True)
+
+        st.markdown("---")
+
+        # ---------------------------------------------------------
+        # BLOQUE 6: EXPORTAR REPORTE EXCEL COMPLETO
+        # ---------------------------------------------------------
         df_inv_exp = obtener_df("SELECT i.*, u.id_bodega FROM inventario i JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion WHERE u.id_bodega = %s", (st.session_state.bodega_activa,))
         df_kardex_exp = obtener_df("SELECT * FROM historial_movimientos WHERE id_bodega = %s ORDER BY fecha_hora DESC", (st.session_state.bodega_activa,))
 
@@ -622,11 +810,13 @@ else:
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             df_inv_exp.to_excel(writer, sheet_name="Inventario_Actual", index=False)
             df_kardex_exp.to_excel(writer, sheet_name="Kardex_Movimientos", index=False)
+            if not df_inactivos.empty:
+                df_inactivos.to_excel(writer, sheet_name="Stock_Inactivo", index=False)
 
         st.download_button(
-            label=f"📥 Descargar Reporte {st.session_state.bodega_activa} (.xlsx)",
+            label=f"📥 Descargar Reporte Completo {st.session_state.bodega_activa} (.xlsx)",
             data=buffer.getvalue(),
-            file_name=f"Reporte_WMS_{st.session_state.bodega_activa}.xlsx",
+            file_name=f"Reporte_WMS_Completo_{st.session_state.bodega_activa}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
