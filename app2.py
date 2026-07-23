@@ -216,12 +216,11 @@ else:
     menu = st.sidebar.radio("Navegación / Módulos", modulos_disponibles)
 
     # ---------------------------------------------------------
-    # 1. MAPA 2D & ESTADO DE UBICACIONES (CON BUSCADOR GLOBAL DE SKU)
+    # 1. MAPA 2D & ESTADO DE UBICACIONES (CON BUSCADOR Y VISIBILIDAD OPTIMIZADA)
     # ---------------------------------------------------------
     if menu == "🗺️ Mapa 2D & Estado":
         st.header("Mapa de Ocupación Física 2D")
 
-        # Cargar datos base del mapa
         query = """
         SELECT u.id_ubicacion, u.coord_x, u.coord_y, u.estado,
                COALESCE(i.sku, 'Vacío') AS sku,
@@ -239,7 +238,7 @@ else:
                 df_mapa["cantidad"] / df_mapa["capacidad"]
             ) * 100
 
-            # --- BUSCADOR / FILTRO DE SKU GLOBAL ---
+            # BUSCADOR GLOBAL DE SKU
             df_skus_existentes = (
                 df_mapa[df_mapa["sku"] != "Vacío"][["sku", "producto"]]
                 .drop_duplicates()
@@ -259,13 +258,11 @@ else:
                     help="Selecciona un producto para visualizar en qué casillas de la bodega se encuentra ubicado.",
                 )
 
-            # Lógica de filtrado y visualización
             df_mapa_plot = df_mapa.copy()
 
             if sku_buscado_sel != "🔍 Mostrar Todos los Productos":
                 sku_clean_busqueda = sku_buscado_sel.split(" - ")[0]
 
-                # Casillas con el SKU buscado
                 coincidencias = df_mapa_plot[df_mapa_plot["sku"] == sku_clean_busqueda]
                 total_encontrado_unidades = coincidencias["cantidad"].sum()
                 total_casillas_encontradas = len(coincidencias)
@@ -277,7 +274,6 @@ else:
                         delta=f"{total_encontrado_unidades} Unidades en Total",
                     )
 
-                # Estado gráfico para resaltar las casillas encontradas
                 df_mapa_plot["Estado_Grafico"] = df_mapa_plot.apply(
                     lambda r: r["estado"]
                     if r["sku"] == sku_clean_busqueda
@@ -285,32 +281,32 @@ else:
                     axis=1,
                 )
                 df_mapa_plot["Tamaño_Punto"] = df_mapa_plot.apply(
-                    lambda r: 35 if r["sku"] == sku_clean_busqueda else 18, axis=1
+                    lambda r: 24 if r["sku"] == sku_clean_busqueda else 12, axis=1
                 )
 
                 color_map = {
                     "Libre": "#2ecc71",
                     "Ocupado": "#e74c3c",
                     "Inhabilitado": "#95a5a6",
-                    "Otro / Sin Coincidencia": "#e0e0e0",
+                    "Otro / Sin Coincidencia": "#d6dbdf",
                 }
             else:
                 df_mapa_plot["Estado_Grafico"] = df_mapa_plot["estado"]
-                df_mapa_plot["Tamaño_Punto"] = 28
+                df_mapa_plot["Tamaño_Punto"] = 18
                 color_map = {
                     "Libre": "#2ecc71",
                     "Ocupado": "#e74c3c",
                     "Inhabilitado": "#95a5a6",
                 }
 
-            # Renderizar gráfico Plotly 2D
+            # GRÁFICO PLOTLY CON ETIQUETAS LEIBLES
             fig = px.scatter(
                 df_mapa_plot,
                 x="coord_x",
                 y="coord_y",
                 color="Estado_Grafico",
                 size="Tamaño_Punto",
-                size_max=35,
+                size_max=24,
                 hover_name="id_ubicacion",
                 hover_data=[
                     "sku",
@@ -323,18 +319,26 @@ else:
                 color_discrete_map=color_map,
                 title="Distribución Espacial de Casillas (Vista Física Bodega)",
             )
+
+            # AJUSTE DE ESTILO DE TEXTO Y BORDES
             fig.update_traces(
-                line=dict(width=1, color="DarkSlateGrey"),
+                marker=dict(line=dict(width=1, color="#2c3e50")),
                 textposition="top center",
+                textfont=dict(size=13, color="#000000", family="Arial Black"),
             )
+            
+            # Espaciado de ejes para que no se corten los textos superiores
+            y_min, y_max = df_mapa_plot["coord_y"].min(), df_mapa_plot["coord_y"].max()
+            x_min, x_max = df_mapa_plot["coord_x"].min(), df_mapa_plot["coord_x"].max()
+
             fig.update_layout(
-                xaxis=dict(tickmode="linear", dtick=1),
-                yaxis=dict(tickmode="linear", dtick=1),
+                xaxis=dict(tickmode="linear", dtick=1, range=[x_min - 0.5, x_max + 0.5]),
+                yaxis=dict(tickmode="linear", dtick=1, range=[y_min - 0.3, y_max + 0.6]),
+                height=550,
                 showlegend=True,
             )
             st.plotly_chart(fig, use_container_width=True)
 
-            # Detalle en tabla
             st.subheader("Detalle de Ubicaciones")
 
             if sku_buscado_sel != "🔍 Mostrar Todos los Productos":
