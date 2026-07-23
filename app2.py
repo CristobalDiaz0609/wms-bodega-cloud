@@ -39,6 +39,14 @@ if "mensaje_exito_reubicacion" not in st.session_state:
 if "mensaje_exito_picking" not in st.session_state:
     st.session_state.mensaje_exito_picking = None
 
+# Variables persistentes de picking
+if "hoja_ruta_persistente" not in st.session_state:
+    st.session_state.hoja_ruta_persistente = None
+if "distancia_total_persistente" not in st.session_state:
+    st.session_state.distancia_total_persistente = None
+if "operaciones_pendientes_picking" not in st.session_state:
+    st.session_state.operaciones_pendientes_picking = []
+
 
 def login():
     st.sidebar.subheader("🔐 Inicio de Sesión de Personal")
@@ -127,6 +135,59 @@ else:
         conn.commit()
         cursor.close()
         conn.close()
+
+    # ---------------------------------------------------------
+    # CALLBACKS PARA MANEJO DE ESTADO SIN CONGELAMIENTO
+    # ---------------------------------------------------------
+    def cancelar_picking_callback():
+        st.session_state.hoja_ruta_persistente = None
+        st.session_state.distancia_total_persistente = None
+        st.session_state.operaciones_pendientes_picking = []
+
+    def confirmar_picking_callback():
+        if st.session_state.operaciones_pendientes_picking:
+            try:
+                conn = obtener_conexion()
+                cursor = conn.cursor()
+
+                for op in st.session_state.operaciones_pendientes_picking:
+                    if op["tipo"] == "DELETE":
+                        cursor.execute(
+                            "DELETE FROM inventario WHERE id_inventario = %s",
+                            (op["id_inventario"],),
+                        )
+                        cursor.execute(
+                            "UPDATE ubicaciones SET estado = 'Libre' WHERE"
+                            " id_ubicacion = %s",
+                            (op["id_ubicacion"],),
+                        )
+                    elif op["tipo"] == "UPDATE":
+                        cursor.execute(
+                            "UPDATE inventario SET cantidad = %s WHERE"
+                            " id_inventario = %s",
+                            (op["nueva_cantidad"], op["id_inventario"]),
+                        )
+
+                    cursor.execute(
+                        "INSERT INTO historial_movimientos (tipo_movimiento,"
+                        " sku, id_ubicacion, cantidad) VALUES ('DESPACHO', %s,"
+                        " %s, %s)",
+                        (op["sku"], op["id_ubicacion"], op["cantidad"]),
+                    )
+
+                conn.commit()
+                cursor.close()
+                conn.close()
+
+                st.session_state.hoja_ruta_persistente = None
+                st.session_state.distancia_total_persistente = None
+                st.session_state.operaciones_pendientes_picking = []
+                st.session_state.mensaje_exito_picking = (
+                    "🎉 ¡Picking confirmado con éxito! El inventario ha sido"
+                    " actualizado correctamente."
+                )
+            except Exception as e:
+                st.session_state.mensaje_exito_picking = f"❌ Error: {e}"
 
     # ---------------------------------------------------------
     # INTERFAZ Y NAVEGACIÓN SEGÚN EL ROL
@@ -223,12 +284,11 @@ else:
             )
 
     # ---------------------------------------------------------
-    # 2. RECEPCIÓN E INGRESO DE MERCADERÍA (CON MENSAJE VERDE DE ÉXITO)
+    # 2. RECEPCIÓN E INGRESO DE MERCADERÍA
     # ---------------------------------------------------------
     elif menu == "📥 Recepción e Ingreso":
         st.header("Ingreso de Stock a Bodega")
 
-        # Desplegar mensaje de confirmación si se acaba de registrar un ingreso
         if st.session_state.mensaje_exito_ingreso:
             st.success(st.session_state.mensaje_exito_ingreso)
             st.session_state.mensaje_exito_ingreso = None
@@ -353,7 +413,6 @@ else:
                             (sku_limpio, ubi_limpia, cantidad_ingreso),
                         )
 
-                        # Guardar el mensaje verde de éxito
                         st.session_state.mensaje_exito_ingreso = (
                             f"🎉 **¡Ingreso completado con éxito!** Se registraron **{cantidad_ingreso} unidad(es)** de "
                             f"**{sku_limpio}** en la casilla **{ubi_limpia}**."
@@ -493,7 +552,7 @@ else:
                 st.rerun()
 
     # ---------------------------------------------------------
-    # 4. PICKING / DESPACHO DE PEDIDOS
+    # 4. PICKING / DESPACHO DE PEDIDOS (CON CALLBACK SEGURO)
     # ---------------------------------------------------------
     elif menu == "🛒 Picking / Despacho":
         st.header("Motor de Picking y Despacho Multi-SKU (Ruta Óptima 2D)")
@@ -501,13 +560,6 @@ else:
         if st.session_state.mensaje_exito_picking:
             st.success(st.session_state.mensaje_exito_picking)
             st.session_state.mensaje_exito_picking = None
-
-        if "hoja_ruta_persistente" not in st.session_state:
-            st.session_state.hoja_ruta_persistente = None
-        if "distancia_total_persistente" not in st.session_state:
-            st.session_state.distancia_total_persistente = None
-        if "operaciones_pendientes_picking" not in st.session_state:
-            st.session_state.operaciones_pendientes_picking = []
 
         df_inv = obtener_df("""
             SELECT i.sku, p.nombre, SUM(i.cantidad) as total_disponible
@@ -542,153 +594,144 @@ else:
                 st.subheader("2. Definir Cantidades a Extraer")
 
                 cantidades_solicitadas = {}
-                with st.form("form_multi_picking"):
-                    cols = st.columns(min(len(skus_seleccionados), 3))
+                cols = st.columns(min(len(skus_seleccionados), 3))
 
-                    for idx, item in enumerate(skus_seleccionados):
-                        sku_clean = item.split(" - ")[0]
-                        nombre_prod = item.split(" - ")[1].split(" (")[0]
-                        max_disp = int(
-                            df_inv[df_inv["sku"] == sku_clean][
-                                "total_disponible"
-                            ].values[0]
-                        )
-
-                        with cols[idx % 3]:
-                            st.markdown(f"**{sku_clean}** - {nombre_prod}")
-                            cant = st.number_input(
-                                f"Cantidad (Máx: {max_disp})",
-                                min_value=1,
-                                max_value=max_disp,
-                                value=1,
-                                key=f"cant_{sku_clean}",
-                            )
-                            cantidades_solicitadas[sku_clean] = cant
-
-                    btn_generar_ruta = st.form_submit_button(
-                        "🚀 Generar Hoja de Ruta Óptima"
+                for idx, item in enumerate(skus_seleccionados):
+                    sku_clean = item.split(" - ")[0]
+                    nombre_prod = item.split(" - ")[1].split(" (")[0]
+                    max_disp = int(
+                        df_inv[df_inv["sku"] == sku_clean][
+                            "total_disponible"
+                        ].values[0]
                     )
 
-                    if btn_generar_ruta:
-                        puntos_extraccion = []
-                        operaciones_db = []
+                    with cols[idx % 3]:
+                        st.markdown(f"**{sku_clean}** - {nombre_prod}")
+                        cant = st.number_input(
+                            f"Cantidad (Máx: {max_disp})",
+                            min_value=1,
+                            max_value=max_disp,
+                            value=1,
+                            key=f"cant_{sku_clean}",
+                        )
+                        cantidades_solicitadas[sku_clean] = cant
 
-                        for (
-                            sku_clean,
-                            cant_solicitada,
-                        ) in cantidades_solicitadas.items():
-                            df_casillas = obtener_df(
-                                """
-                                SELECT i.id_inventario, i.id_ubicacion, i.cantidad, u.coord_x, u.coord_y
-                                FROM inventario i
-                                JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion
-                                WHERE i.sku = %s
-                                ORDER BY i.cantidad ASC
-                            """,
-                                (sku_clean,),
-                            )
+                if st.button("🚀 Generar Hoja de Ruta Óptima", type="primary"):
+                    puntos_extraccion = []
+                    operaciones_db = []
 
-                            por_despachar = cant_solicitada
+                    for (
+                        sku_clean,
+                        cant_solicitada,
+                    ) in cantidades_solicitadas.items():
+                        df_casillas = obtener_df(
+                            """
+                            SELECT i.id_inventario, i.id_ubicacion, i.cantidad, u.coord_x, u.coord_y
+                            FROM inventario i
+                            JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion
+                            WHERE i.sku = %s
+                            ORDER BY i.cantidad ASC
+                        """,
+                            (sku_clean,),
+                        )
 
-                            for _, row in df_casillas.iterrows():
-                                if por_despachar <= 0:
-                                    break
+                        por_despachar = cant_solicitada
 
-                                id_inv = row["id_inventario"]
-                                ubi = row["id_ubicacion"]
-                                cant_en_casilla = row["cantidad"]
-                                cx = row["coord_x"]
-                                cy = row["coord_y"]
+                        for _, row in df_casillas.iterrows():
+                            if por_despachar <= 0:
+                                break
 
-                                if cant_en_casilla <= por_despachar:
-                                    despacho_casilla = cant_en_casilla
-                                    operaciones_db.append({
-                                        "tipo": "DELETE",
-                                        "id_inventario": id_inv,
-                                        "id_ubicacion": ubi,
-                                        "sku": sku_clean,
-                                        "cantidad": despacho_casilla,
-                                    })
-                                else:
-                                    despacho_casilla = por_despachar
-                                    nueva_cant = cant_en_casilla - por_despachar
-                                    operaciones_db.append({
-                                        "tipo": "UPDATE",
-                                        "id_inventario": id_inv,
-                                        "nueva_cantidad": nueva_cant,
-                                        "id_ubicacion": ubi,
-                                        "sku": sku_clean,
-                                        "cantidad": despacho_casilla,
-                                    })
+                            id_inv = row["id_inventario"]
+                            ubi = row["id_ubicacion"]
+                            cant_en_casilla = row["cantidad"]
+                            cx = row["coord_x"]
+                            cy = row["coord_y"]
 
-                                por_despachar -= despacho_casilla
-                                puntos_extraccion.append({
-                                    "SKU": sku_clean,
-                                    "Ubicación": ubi,
-                                    "Extraer": despacho_casilla,
-                                    "x": cx,
-                                    "y": cy,
+                            if cant_en_casilla <= por_despachar:
+                                despacho_casilla = cant_en_casilla
+                                operaciones_db.append({
+                                    "tipo": "DELETE",
+                                    "id_inventario": id_inv,
+                                    "id_ubicacion": ubi,
+                                    "sku": sku_clean,
+                                    "cantidad": despacho_casilla,
+                                })
+                            else:
+                                despacho_casilla = por_despachar
+                                nueva_cant = cant_en_casilla - por_despachar
+                                operaciones_db.append({
+                                    "tipo": "UPDATE",
+                                    "id_inventario": id_inv,
+                                    "nueva_cantidad": nueva_cant,
+                                    "id_ubicacion": ubi,
+                                    "sku": sku_clean,
+                                    "cantidad": despacho_casilla,
                                 })
 
-                        pos_actual = (0, 0)
-                        ruta_ordenada = []
-                        distancia_total = 0.0
+                            por_despachar -= despacho_casilla
+                            puntos_extraccion.append({
+                                "SKU": sku_clean,
+                                "Ubicación": ubi,
+                                "Extraer": despacho_casilla,
+                                "x": cx,
+                                "y": cy,
+                            })
 
-                        pendientes = puntos_extraccion.copy()
-                        paso = 1
+                    pos_actual = (0, 0)
+                    ruta_ordenada = []
+                    distancia_total = 0.0
 
-                        while pendientes:
-                            mejor_idx = 0
-                            menor_dist = abs(
-                                pendientes[0]["x"] - pos_actual[0]
-                            ) + abs(pendientes[0]["y"] - pos_actual[1])
+                    pendientes = puntos_extraccion.copy()
+                    paso = 1
 
-                            for i in range(1, len(pendientes)):
-                                dist = abs(
-                                    pendientes[i]["x"] - pos_actual[0]
-                                ) + abs(pendientes[i]["y"] - pos_actual[1])
-                                if dist < menor_dist:
-                                    menor_dist = dist
-                                    mejor_idx = i
+                    while pendientes:
+                        mejor_idx = 0
+                        menor_dist = abs(
+                            pendientes[0]["x"] - pos_actual[0]
+                        ) + abs(pendientes[0]["y"] - pos_actual[1])
 
-                            siguiente_punto = pendientes.pop(mejor_idx)
-                            distancia_total += menor_dist
-                            pos_actual = (
-                                siguiente_punto["x"],
-                                siguiente_punto["y"],
-                            )
+                        for i in range(1, len(pendientes)):
+                            dist = abs(
+                                pendientes[i]["x"] - pos_actual[0]
+                            ) + abs(pendientes[i]["y"] - pos_actual[1])
+                            if dist < menor_dist:
+                                menor_dist = dist
+                                mejor_idx = i
 
-                            siguiente_punto["Paso"] = paso
-                            siguiente_punto["Dist. Tramo (m)"] = menor_dist
-                            ruta_ordenada.append(siguiente_punto)
-                            paso += 1
-
-                        df_hoja_ruta = pd.DataFrame(ruta_ordenada)
-                        if not df_hoja_ruta.empty:
-                            df_hoja_ruta = df_hoja_ruta[[
-                                "Paso",
-                                "Ubicación",
-                                "SKU",
-                                "Extraer",
-                                "Dist. Tramo (m)",
-                                "x",
-                                "y",
-                            ]]
-
-                        st.session_state.hoja_ruta_persistente = df_hoja_ruta
-                        st.session_state.distancia_total_persistente = (
-                            distancia_total
+                        siguiente_punto = pendientes.pop(mejor_idx)
+                        distancia_total += menor_dist
+                        pos_actual = (
+                            siguiente_punto["x"],
+                            siguiente_punto["y"],
                         )
-                        st.session_state.operaciones_pendientes_picking = (
-                            operaciones_db
-                        )
-                        st.info(
-                            "📋 Ruta generada exitosamente. Revisa la ruta y"
-                            " presiona 'Confirmar y Finalizar' para descontar"
-                            " del inventario."
-                        )
-                        st.rerun()
 
+                        siguiente_punto["Paso"] = paso
+                        siguiente_punto["Dist. Tramo (m)"] = menor_dist
+                        ruta_ordenada.append(siguiente_punto)
+                        paso += 1
+
+                    df_hoja_ruta = pd.DataFrame(ruta_ordenada)
+                    if not df_hoja_ruta.empty:
+                        df_hoja_ruta = df_hoja_ruta[[
+                            "Paso",
+                            "Ubicación",
+                            "SKU",
+                            "Extraer",
+                            "Dist. Tramo (m)",
+                            "x",
+                            "y",
+                        ]]
+
+                    st.session_state.hoja_ruta_persistente = df_hoja_ruta
+                    st.session_state.distancia_total_persistente = (
+                        distancia_total
+                    )
+                    st.session_state.operaciones_pendientes_picking = (
+                        operaciones_db
+                    )
+                    st.rerun()
+
+            # VISTA DE HOJA DE RUTA ACTIVA
             if st.session_state.hoja_ruta_persistente is not None:
                 st.markdown("---")
                 st.subheader("📋 Hoja de Ruta Activa para Operador:")
@@ -706,68 +749,19 @@ else:
                 col_btn1, col_btn2 = st.columns(2)
 
                 with col_btn1:
-                    if st.button(
+                    st.button(
                         "❌ Cancelar / Limpiar Ruta (Sin Descontar Stock)",
                         use_container_width=True,
-                    ):
-                        st.session_state.hoja_ruta_persistente = None
-                        st.session_state.distancia_total_persistente = None
-                        st.session_state.operaciones_pendientes_picking = []
-                        st.warning(
-                            "⚠️ Ruta cancelada. El inventario no sufrió"
-                            " modificaciones."
-                        )
-                        st.rerun()
+                        on_click=cancelar_picking_callback,
+                    )
 
                 with col_btn2:
-                    if st.button(
+                    st.button(
                         "✅ Confirmar y Finalizar Picking (Descontar Stock)",
                         type="primary",
                         use_container_width=True,
-                    ):
-                        if st.session_state.operaciones_pendientes_picking:
-                            for (
-                                op
-                            ) in (
-                                st.session_state.operaciones_pendientes_picking
-                            ):
-                                if op["tipo"] == "DELETE":
-                                    ejecutar_query(
-                                        "DELETE FROM inventario WHERE"
-                                        " id_inventario = %s",
-                                        (op["id_inventario"],),
-                                    )
-                                    ejecutar_query(
-                                        "UPDATE ubicaciones SET estado ="
-                                        " 'Libre' WHERE id_ubicacion = %s",
-                                        (op["id_ubicacion"],),
-                                    )
-                                elif op["tipo"] == "UPDATE":
-                                    ejecutar_query(
-                                        "UPDATE inventario SET cantidad = %s"
-                                        " WHERE id_inventario = %s",
-                                        (
-                                            op["nueva_cantidad"],
-                                            op["id_inventario"],
-                                        ),
-                                    )
-
-                                ejecutar_query(
-                                    "INSERT INTO historial_movimientos"
-                                    " (tipo_movimiento, sku, id_ubicacion,"
-                                    " cantidad) VALUES ('DESPACHO', %s, %s,"
-                                    " %s)",
-                                    (op["sku"], op["id_ubicacion"], op["cantidad"]),
-                                )
-
-                        st.session_state.hoja_ruta_persistente = None
-                        st.session_state.distancia_total_persistente = None
-                        st.session_state.operaciones_pendientes_picking = []
-                        st.session_state.mensaje_exito_picking = (
-                            "🎉 ¡Picking confirmado con éxito! El inventario ha"
-                            " sido actualizado correctamente."
-                        )
-                        st.rerun()
+                        on_click=confirmar_picking_callback,
+                    )
 
     # ---------------------------------------------------------
     # 5. DASHBOARD & KPIS (EXCLUSIVO ADMIN)
