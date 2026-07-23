@@ -623,14 +623,10 @@ else:
 
         total_skus = obtener_df("SELECT COUNT(*) as t FROM productos")["t"].values[0]
 
-        pct_casillas = (casillas_ocupadas / total_casillas) * 100
-        pct_volumétrica = (stock_actual / capacidad_total_bodega) * 100
-
-        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+        # Fila de KPIs simplificada (2 métricas limpias)
+        kpi1, kpi2 = st.columns(2)
         kpi1.metric("Total SKUs Registrados", f"{total_skus} Productos")
         kpi2.metric("Total Unidades en Stock", f"{stock_actual:.1f} Un.")
-        kpi3.metric("Ocupación de Casillas", f"{pct_casillas:.1f}%", f"↑ {casillas_ocupadas}/{total_casillas} Casillas")
-        kpi4.metric("Ocupación Volumétrica", f"{pct_volumétrica:.1f}%", f"↑ Cap. Máx: {capacidad_total_bodega:.1f}")
 
         st.markdown("---")
 
@@ -679,7 +675,6 @@ else:
             GROUP BY DAY(fecha_hora)
         """, (st.session_state.bodega_activa,))
 
-        # Crear plantilla completa para los 31 días del mes
         df_31_dias = pd.DataFrame({"dia": list(range(1, 32))})
         if not df_picking_diario.empty:
             df_chart_picking = pd.merge(df_31_dias, df_picking_diario, on="dia", how="left").fillna(0)
@@ -712,37 +707,30 @@ else:
         st.markdown("---")
 
         # ---------------------------------------------------------
-        # BLOQUE 4: STOCK POR PRODUCTO Y OCUPACIÓN DE CASILLAS
+        # BLOQUE 4: GRÁFICOS DE DONA / ANILLO COMPORATIVOS DE OCUPACIÓN
         # ---------------------------------------------------------
         col_g1, col_g2 = st.columns(2)
 
         with col_g1:
-            st.subheader("📦 Stock Actual por Producto")
-            df_stock_prod = obtener_df("""
-                SELECT p.nombre, SUM(i.cantidad) AS total_unidades
-                FROM inventario i
-                JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion
-                JOIN productos p ON i.sku = p.sku
-                WHERE u.id_bodega = %s
-                GROUP BY p.nombre
-                ORDER BY total_unidades DESC
-            """, (st.session_state.bodega_activa,))
+            st.subheader("📦 Ocupación Volumétrica de Bodega")
+            
+            capacidad_libre = max(0.0, capacidad_total_bodega - stock_actual)
+            df_volumen = pd.DataFrame({
+                "Estado_Volumen": ["Capacidad Usada", "Capacidad Disponible"],
+                "Unidades": [stock_actual, capacidad_libre]
+            })
 
-            if df_stock_prod.empty:
-                st.info("No hay inventario registrado en esta bodega.")
-            else:
-                fig_barras = px.bar(
-                    df_stock_prod,
-                    x="nombre",
-                    y="total_unidades",
-                    text="total_unidades",
-                    labels={"nombre": "Producto", "total_unidades": "Unidades"},
-                    color="total_unidades",
-                    color_continuous_scale="Blues"
-                )
-                fig_barras.update_traces(textposition="outside")
-                fig_barras.update_layout(height=380, showlegend=False)
-                st.plotly_chart(fig_barras, use_container_width=True)
+            fig_pie_vol = px.pie(
+                df_volumen,
+                names="Estado_Volumen",
+                values="Unidades",
+                hole=0.4,
+                color="Estado_Volumen",
+                color_discrete_map={"Capacidad Usada": "#3498db", "Capacidad Disponible": "#ecf0f1"}
+            )
+            fig_pie_vol.update_traces(textinfo="percent+label")
+            fig_pie_vol.update_layout(height=380)
+            st.plotly_chart(fig_pie_vol, use_container_width=True)
 
         with col_g2:
             st.subheader("🎯 Ocupación Física de Casillas")
