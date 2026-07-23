@@ -523,6 +523,7 @@ else:
                     btn_mover = st.button("🚀 Confirmar Reubicación", type="primary", use_container_width=True)
 
             if btn_mover:
+                # 1. ACTUALIZAR CASILLA DE ORIGEN
                 if cant_a_mover == cant_disponible_origen:
                     ejecutar_query("DELETE FROM inventario WHERE id_inventario = %s", (id_inv_origen,))
                     ejecutar_query("UPDATE ubicaciones SET estado = 'Libre' WHERE id_ubicacion = %s", (ubi_origen,))
@@ -530,6 +531,7 @@ else:
                     nueva_cant_origen = cant_disponible_origen - cant_a_mover
                     ejecutar_query("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (nueva_cant_origen, id_inv_origen))
 
+                # 2. ACTUALIZAR CASILLA DE DESTINO
                 inv_destino = obtener_df("SELECT id_inventario, cantidad FROM inventario WHERE id_ubicacion = %s", (ubi_destino,))
                 
                 if inv_destino.empty:
@@ -540,10 +542,7 @@ else:
                     id_inv_dest = int(inv_destino["id_inventario"].values[0])
                     ejecutar_query("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (nueva_cant_dest, id_inv_dest))
 
-                ejecutar_query(
-                    "INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad) VALUES ('ENTRADA', %s, %s, %s)",
-                    (sku_origen, ubi_destino, cant_a_mover)
-                )
+                # NO SE REGISTRA EN EL HISTORIAL PARA NO SALIR COMO 'ENTRADA' NI AFECTAR MÉTRICAS DE TRAZABILIDAD
 
                 st.session_state.mensaje_exito_reubicacion = (
                     f"✅ **¡Reubicación completada con éxito!** Se trasladaron correctamente **{cant_a_mover} unidad(es)** de **{sku_origen}** "
@@ -731,7 +730,6 @@ else:
                     )
                     st.rerun()
 
-            # VISTA DE HOJA DE RUTA ACTIVA
             if st.session_state.hoja_ruta_persistente is not None:
                 st.markdown("---")
                 st.subheader("📋 Hoja de Ruta Activa para Operador:")
