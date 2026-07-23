@@ -662,18 +662,49 @@ else:
         st.markdown("---")
 
         # ---------------------------------------------------------
-        # BLOQUE 3: TENDENCIA DIARIA DE PICKING (DÍAS 1 AL 31)
+        # BLOQUE 3: TENDENCIA DIARIA DE PICKING CON FILTRO DE SKU
         # ---------------------------------------------------------
         st.subheader("📈 Tendencia Diaria de Picking (Días 1 al 31)")
 
-        df_picking_diario = obtener_df("""
-            SELECT DAY(fecha_hora) AS dia,
-                   SUM(CASE WHEN MONTH(fecha_hora) = MONTH(CURRENT_DATE()) THEN cantidad ELSE 0 END) AS Mes_Actual,
-                   SUM(CASE WHEN MONTH(fecha_hora) = MONTH(CURRENT_DATE() - INTERVAL 1 MONTH) THEN cantidad ELSE 0 END) AS Mes_Anterior
-            FROM historial_movimientos
-            WHERE tipo_movimiento = 'DESPACHO' AND id_bodega = %s
-            GROUP BY DAY(fecha_hora)
+        # Cargar la lista de SKUs disponibles en los despachos para el filtro
+        df_skus_picking = obtener_df("""
+            SELECT DISTINCT h.sku, p.nombre
+            FROM historial_movimientos h
+            JOIN productos p ON h.sku = p.sku
+            WHERE h.tipo_movimiento = 'DESPACHO' AND h.id_bodega = %s
+            ORDER BY h.sku ASC
         """, (st.session_state.bodega_activa,))
+
+        opciones_filtro_sku = ["🔍 Todos los SKUs (Suma Global)"] + (
+            df_skus_picking["sku"] + " - " + df_skus_picking["nombre"]
+        ).tolist() if not df_skus_picking.empty else ["🔍 Todos los SKUs (Suma Global)"]
+
+        sku_filtro_sel = st.selectbox("📦 Filtrar Serie Temporal por SKU:", opciones_filtro_sku)
+
+        # Construir la consulta según el filtro seleccionado
+        if sku_filtro_sel == "🔍 Todos los SKUs (Suma Global)":
+            query_picking_diario = """
+                SELECT DAY(fecha_hora) AS dia,
+                       SUM(CASE WHEN MONTH(fecha_hora) = MONTH(CURRENT_DATE()) THEN cantidad ELSE 0 END) AS Mes_Actual,
+                       SUM(CASE WHEN MONTH(fecha_hora) = MONTH(CURRENT_DATE() - INTERVAL 1 MONTH) THEN cantidad ELSE 0 END) AS Mes_Anterior
+                FROM historial_movimientos
+                WHERE tipo_movimiento = 'DESPACHO' AND id_bodega = %s
+                GROUP BY DAY(fecha_hora)
+            """
+            params_picking = (st.session_state.bodega_activa,)
+        else:
+            sku_clean_filtro = sku_filtro_sel.split(" - ")[0]
+            query_picking_diario = """
+                SELECT DAY(fecha_hora) AS dia,
+                       SUM(CASE WHEN MONTH(fecha_hora) = MONTH(CURRENT_DATE()) THEN cantidad ELSE 0 END) AS Mes_Actual,
+                       SUM(CASE WHEN MONTH(fecha_hora) = MONTH(CURRENT_DATE() - INTERVAL 1 MONTH) THEN cantidad ELSE 0 END) AS Mes_Anterior
+                FROM historial_movimientos
+                WHERE tipo_movimiento = 'DESPACHO' AND id_bodega = %s AND sku = %s
+                GROUP BY DAY(fecha_hora)
+            """
+            params_picking = (st.session_state.bodega_activa, sku_clean_filtro)
+
+        df_picking_diario = obtener_df(query_picking_diario, params_picking)
 
         df_31_dias = pd.DataFrame({"dia": list(range(1, 32))})
         if not df_picking_diario.empty:
@@ -697,7 +728,7 @@ else:
             y="Unidades Despachadas",
             color="Periodo",
             markers=True,
-            title="Evolución del Picking Diario (Comparativo Mes Actual vs Mes Anterior)",
+            title=f"Evolución del Picking Diario - {sku_filtro_sel}",
             labels={"dia": "Día del Mes", "Unidades Despachadas": "Unidades Despachadas"},
             color_discrete_map={"Mes Actual": "#2980b9", "Mes Anterior": "#bdc3c7"}
         )
@@ -707,7 +738,7 @@ else:
         st.markdown("---")
 
         # ---------------------------------------------------------
-        # BLOQUE 4: GRÁFICOS DE DONA / ANILLO COMPORATIVOS DE OCUPACIÓN
+        # BLOQUE 4: GRÁFICOS DE DONA / ANILLO COMPARATIVOS DE OCUPACIÓN
         # ---------------------------------------------------------
         col_g1, col_g2 = st.columns(2)
 
