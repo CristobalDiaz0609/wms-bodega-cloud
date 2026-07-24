@@ -126,23 +126,27 @@ CSS_EMPRESARIAL = """
         border-bottom: 1px solid rgba(255, 255, 255, 0.2);
     }
 
-    /* 4. BOTÓN CERRAR SESIÓN ESTILIZADO COMO EL BADGE DE ADMINISTRADOR */
-    div.logout-wrapper button, 
-    div.logout-wrapper button:focus, 
-    div.logout-wrapper button:active {
+    /* 4. BOTÓN CERRAR SESIÓN (SELECCIÓN DIRECTA SIN DEPENDER DE HTML WRAPPERS) */
+    section[data-testid="stSidebar"] div.stButton > button {
         background-color: #FEF3C7 !important;
-        color: #78350F !important;
         border: 1px solid #F59E0B !important;
         border-radius: 8px !important;
-        font-weight: 700 !important;
-        padding: 8px 16px !important;
+        padding: 6px 16px !important;
         transition: all 0.25s ease !important;
         width: 100% !important;
         box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important;
     }
-    div.logout-wrapper button:hover {
+
+    section[data-testid="stSidebar"] div.stButton > button *,
+    section[data-testid="stSidebar"] div.stButton > button p,
+    section[data-testid="stSidebar"] div.stButton > button span {
+        color: #78350F !important;
+        font-weight: 700 !important;
+        font-size: 0.92rem !important;
+    }
+
+    section[data-testid="stSidebar"] div.stButton > button:hover {
         background-color: #FDE68A !important;
-        color: #451A03 !important;
         border-color: #D97706 !important;
         box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3) !important;
     }
@@ -333,10 +337,8 @@ else:
         st.sidebar.markdown(f"🏢 **Bodega Asignada:** `{st.session_state.bodega_usuario}` - {dict_bodegas.get(st.session_state.bodega_usuario, '')}")
         st.session_state.bodega_activa = st.session_state.bodega_usuario
 
-    st.sidebar.markdown("<div class='logout-wrapper'>", unsafe_allow_html=True)
     if st.sidebar.button("Cerrar Sesión"):
         logout()
-    st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
     st.sidebar.markdown("---")
 
