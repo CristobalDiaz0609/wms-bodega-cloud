@@ -11,6 +11,76 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
+# ESTILOS CSS PERSONALIZADOS (PALETA EMPRESARIAL)
+# ---------------------------------------------------------
+CSS_EMPRESARIAL = """
+<style>
+    /* Fondo principal de la app */
+    .stApp {
+        background-color: #F5F7FA;
+    }
+    
+    /* Encabezados y Títulos */
+    h1, h2, h3, h4 {
+        color: #1F3864 !important;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    
+    /* Botones primarios */
+    div.stButton > button[kind="primary"] {
+        background-color: #1F3864 !important;
+        color: #FFFFFF !important;
+        border-radius: 8px;
+        border: none;
+        font-weight: 600;
+        transition: all 0.3s ease;
+    }
+    div.stButton > button[kind="primary"]:hover {
+        background-color: #152746 !important;
+        box-shadow: 0 4px 10px rgba(31, 56, 100, 0.3);
+    }
+
+    /* Estilo de la Barra Lateral */
+    section[data-testid="stSidebar"] {
+        background-color: #1F3864 !important;
+    }
+    section[data-testid="stSidebar"] * {
+        color: #F5F7FA !important;
+    }
+    section[data-testid="stSidebar"] .stRadio label {
+        color: #F5F7FA !important;
+    }
+
+    /* Tarjetas de Métricas (KPIs) */
+    div[data-testid="stMetric"] {
+        background-color: #FFFFFF;
+        padding: 15px;
+        border-radius: 10px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        border-left: 5px solid #1F3864;
+    }
+    div[data-testid="stMetricLabel"] {
+        color: #5A6A85 !important;
+        font-size: 0.9rem !important;
+        font-weight: 600;
+    }
+    div[data-testid="stMetricValue"] {
+        color: #1F3864 !important;
+        font-weight: 700;
+    }
+
+    /* Tablas de Datos */
+    .stDataFrame {
+        background-color: #FFFFFF;
+        border-radius: 8px;
+        padding: 5px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+    }
+</style>
+"""
+st.markdown(CSS_EMPRESARIAL, unsafe_allow_html=True)
+
+# ---------------------------------------------------------
 # CREDENCIALES, ROLES Y BODEGAS ASIGNADAS
 # ---------------------------------------------------------
 USUARIOS_PERMITIDOS = {
@@ -296,9 +366,9 @@ else:
             )
 
             fig.update_traces(
-                marker=dict(line=dict(width=1, color="#2c3e50")),
+                marker=dict(line=dict(width=1, color="#1F3864")),
                 textposition="top center",
-                textfont=dict(size=13, color="#000000", family="Arial Black"),
+                textfont=dict(size=13, color="#1F3864", family="Segoe UI Black"),
             )
 
             y_min, y_max = df_mapa_plot["coord_y"].min(), df_mapa_plot["coord_y"].max()
@@ -309,6 +379,8 @@ else:
                 yaxis=dict(tickmode="linear", dtick=1, range=[y_min - 0.3, y_max + 0.6]),
                 height=550,
                 showlegend=True,
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)"
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -364,7 +436,7 @@ else:
 
                     st.info(f"Espacio máximo disponible en la casilla {ubi_limpia}: {espacio_max} unidades.")
                     cantidad_ingreso = st.number_input("Cantidad a Ingresar", min_value=1, max_value=espacio_max, value=1)
-                    btn_ingresar = st.form_submit_button("Confirmar Ingreso")
+                    btn_ingresar = st.form_submit_button("Confirmar Ingreso", type="primary")
 
                     if btn_ingresar:
                         inv_existente = obtener_df("SELECT id_inventario, cantidad FROM inventario WHERE id_ubicacion = %s", (ubi_limpia,))
@@ -623,7 +695,6 @@ else:
 
         total_skus = obtener_df("SELECT COUNT(*) as t FROM productos")["t"].values[0]
 
-        # Fila de KPIs simplificada (2 métricas limpias)
         kpi1, kpi2 = st.columns(2)
         kpi1.metric("Total SKUs Registrados", f"{total_skus} Productos")
         kpi2.metric("Total Unidades en Stock", f"{stock_actual:.1f} Un.")
@@ -666,7 +737,6 @@ else:
         # ---------------------------------------------------------
         st.subheader("📈 Tendencia Diaria de Picking (Días 1 al 31)")
 
-        # Cargar la lista de SKUs disponibles en los despachos para el filtro
         df_skus_picking = obtener_df("""
             SELECT DISTINCT h.sku, p.nombre
             FROM historial_movimientos h
@@ -681,7 +751,6 @@ else:
 
         sku_filtro_sel = st.selectbox("📦 Filtrar Serie Temporal por SKU:", opciones_filtro_sku)
 
-        # Construir la consulta según el filtro seleccionado
         if sku_filtro_sel == "🔍 Todos los SKUs (Suma Global)":
             query_picking_diario = """
                 SELECT DAY(fecha_hora) AS dia,
@@ -730,15 +799,20 @@ else:
             markers=True,
             title=f"Evolución del Picking Diario - {sku_filtro_sel}",
             labels={"dia": "Día del Mes", "Unidades Despachadas": "Unidades Despachadas"},
-            color_discrete_map={"Mes Actual": "#2980b9", "Mes Anterior": "#bdc3c7"}
+            color_discrete_map={"Mes Actual": "#1F3864", "Mes Anterior": "#94A3B8"}
         )
-        fig_picking_line.update_layout(height=400, xaxis=dict(tickmode="linear", dtick=1))
+        fig_picking_line.update_layout(
+            height=400, 
+            xaxis=dict(tickmode="linear", dtick=1),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)"
+        )
         st.plotly_chart(fig_picking_line, use_container_width=True)
 
         st.markdown("---")
 
         # ---------------------------------------------------------
-        # BLOQUE 4: GRÁFICOS DE DONA / ANILLO COMPARATIVOS DE OCUPACIÓN
+        # BLOQUE 4: GRÁFICOS DE DONA / ANILLO COMPARATIVOS
         # ---------------------------------------------------------
         col_g1, col_g2 = st.columns(2)
 
@@ -757,10 +831,10 @@ else:
                 values="Unidades",
                 hole=0.4,
                 color="Estado_Volumen",
-                color_discrete_map={"Capacidad Usada": "#3498db", "Capacidad Disponible": "#ecf0f1"}
+                color_discrete_map={"Capacidad Usada": "#1F3864", "Capacidad Disponible": "#E2E8F0"}
             )
             fig_pie_vol.update_traces(textinfo="percent+label")
-            fig_pie_vol.update_layout(height=380)
+            fig_pie_vol.update_layout(height=380, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(fig_pie_vol, use_container_width=True)
 
         with col_g2:
@@ -781,10 +855,10 @@ else:
                     values="cantidad",
                     hole=0.4,
                     color="estado",
-                    color_discrete_map={"Libre": "#2ecc71", "Ocupado": "#e74c3c", "Inhabilitado": "#95a5a6"}
+                    color_discrete_map={"Libre": "#10B981", "Ocupado": "#EF4444", "Inhabilitado": "#94A3B8"}
                 )
                 fig_pie.update_traces(textinfo="percent+label")
-                fig_pie.update_layout(height=380)
+                fig_pie.update_layout(height=380, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
                 st.plotly_chart(fig_pie, use_container_width=True)
 
         st.markdown("---")
@@ -837,6 +911,7 @@ else:
             data=buffer.getvalue(),
             file_name=f"Reporte_WMS_Completo_{st.session_state.bodega_activa}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary"
         )
 
     # KÁRDEX
@@ -859,7 +934,7 @@ else:
             if not df_ubis.empty:
                 ubi_sel = st.selectbox("Seleccionar Casilla", df_ubis["id_ubicacion"])
 
-                if st.button("Generar QR"):
+                if st.button("Generar QR", type="primary"):
                     qr = qrcode.QRCode(version=1, box_size=10, border=5)
                     qr.add_data(f"WMS-UBICACION:{st.session_state.bodega_activa}:{ubi_sel}")
                     qr.make(fit=True)
@@ -868,14 +943,14 @@ else:
                     buf = io.BytesIO()
                     img.save(buf, format="PNG")
                     st.image(buf.getvalue(), caption=f"QR Casilla: {ubi_sel} ({st.session_state.bodega_activa})", width=250)
-                    st.download_button(label=f"📥 Descargar QR {ubi_sel}.png", data=buf.getvalue(), file_name=f"QR_{st.session_state.bodega_activa}_{ubi_sel}.png", mime="image/png")
+                    st.download_button(label=f"📥 Descargar QR {ubi_sel}.png", data=buf.getvalue(), file_name=f"QR_{st.session_state.bodega_activa}_{ubi_sel}.png", mime="image/png", type="primary")
         else:
             df_prods = obtener_df("SELECT sku, nombre FROM productos")
             if not df_prods.empty:
                 prod_sel = st.selectbox("Seleccionar Producto", df_prods["sku"] + " - " + df_prods["nombre"])
                 sku_qr = prod_sel.split(" - ")[0]
 
-                if st.button("Generar QR"):
+                if st.button("Generar QR", type="primary"):
                     qr = qrcode.QRCode(version=1, box_size=10, border=5)
                     qr.add_data(f"WMS-SKU:{sku_qr}")
                     qr.make(fit=True)
@@ -884,4 +959,4 @@ else:
                     buf = io.BytesIO()
                     img.save(buf, format="PNG")
                     st.image(buf.getvalue(), caption=f"QR SKU: {sku_qr}", width=250)
-                    st.download_button(label=f"📥 Descargar QR {sku_qr}.png", data=buf.getvalue(), file_name=f"QR_SKU_{sku_qr}.png", mime="image/png")
+                    st.download_button(label=f"📥 Descargar QR {sku_qr}.png", data=buf.getvalue(), file_name=f"QR_SKU_{sku_qr}.png", mime="image/png", type="primary")
