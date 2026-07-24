@@ -11,7 +11,7 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# ESTILOS CSS PERSONALIZADOS (PALETA EMPRESARIAL)
+# ESTILOS CSS PERSONALIZADOS (PALETA EMPRESARIAL CORREGIDA)
 # ---------------------------------------------------------
 CSS_EMPRESARIAL = """
 <style>
@@ -40,15 +40,58 @@ CSS_EMPRESARIAL = """
         box-shadow: 0 4px 10px rgba(31, 56, 100, 0.3);
     }
 
-    /* Estilo de la Barra Lateral */
+    /* BARRA LATERAL (SIDEBAR) - CORRECCIÓN DE CONTRASTE */
     section[data-testid="stSidebar"] {
         background-color: #1F3864 !important;
     }
-    section[data-testid="stSidebar"] * {
-        color: #F5F7FA !important;
+    section[data-testid="stSidebar"] h1, 
+    section[data-testid="stSidebar"] h2, 
+    section[data-testid="stSidebar"] h3, 
+    section[data-testid="stSidebar"] p, 
+    section[data-testid="stSidebar"] label,
+    section[data-testid="stSidebar"] span {
+        color: #FFFFFF !important;
     }
-    section[data-testid="stSidebar"] .stRadio label {
-        color: #F5F7FA !important;
+    
+    /* Recuadros de código tipo `admin` en la barra lateral */
+    section[data-testid="stSidebar"] code {
+        background-color: #2D4B7C !important;
+        color: #FFFFFF !important;
+        border: 1px solid #4A6B9D !important;
+        font-weight: bold;
+    }
+
+    /* Cajas de selección (Selectbox) e Inputs en la barra lateral */
+    section[data-testid="stSidebar"] div[data-baseweb="select"] > div {
+        background-color: #2D4B7C !important;
+        color: #FFFFFF !important;
+        border: 1px solid #4A6B9D !important;
+    }
+    section[data-testid="stSidebar"] div[data-baseweb="select"] span {
+        color: #FFFFFF !important;
+    }
+    section[data-testid="stSidebar"] svg {
+        fill: #FFFFFF !important;
+    }
+
+    /* Menú desplegable cuando se abre el Selectbox */
+    ul[data-baseweb="menu"] {
+        background-color: #1F3864 !important;
+    }
+    ul[data-baseweb="menu"] li {
+        color: #FFFFFF !important;
+    }
+
+    /* Botón de Cerrar Sesión en la barra lateral */
+    section[data-testid="stSidebar"] div.stButton > button {
+        background-color: #2D4B7C !important;
+        color: #FFFFFF !important;
+        border: 1px solid #4A6B9D !important;
+        font-weight: 600;
+    }
+    section[data-testid="stSidebar"] div.stButton > button:hover {
+        background-color: #3B5E96 !important;
+        color: #FFFFFF !important;
     }
 
     /* Tarjetas de Métricas (KPIs) */
@@ -615,7 +658,7 @@ else:
                             else:
                                 despacho_casilla = por_despachar
                                 nueva_cant = cant_en_casilla - por_despachar
-                                operaciones_db.append({"tipo": "UPDATE", "id_inventario": id_inv, "nueva_cantidad": nueva_cant, "id_ubicacion": ubi, "sku": sku_clean, "cantidad": despacho_casilla})
+                                operaciones_db.append({"tipo": "UPDATE", "id_inventario": id_inv, "nueva_cantidad": nueva_cant, "id_inventario": id_inv, "id_ubicacion": ubi, "sku": sku_clean, "cantidad": despacho_casilla})
 
                             por_despachar -= despacho_casilla
                             puntos_extraccion.append({"SKU": sku_clean, "Ubicación": ubi, "Extraer": despacho_casilla, "x": cx, "y": cy})
