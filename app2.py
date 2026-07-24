@@ -50,6 +50,18 @@ CSS_EMPRESARIAL = """
         border: 1px solid #4A6B9D;
     }
     
+    .role-badge-superadmin {
+        display: inline-block;
+        background-color: #F3E8FF !important;
+        color: #6B21A8 !important;
+        padding: 4px 12px;
+        border-radius: 6px;
+        font-size: 0.85rem;
+        font-weight: 800;
+        border: 1px solid #A855F7 !important;
+        box-shadow: 0 1px 4px rgba(168, 85, 247, 0.2);
+    }
+
     .role-badge-admin {
         display: inline-block;
         background-color: #FEF3C7 !important;
@@ -198,8 +210,8 @@ st.markdown(CSS_EMPRESARIAL, unsafe_allow_html=True)
 # CREDENCIALES, ROLES Y BODEGAS ASIGNADAS
 # ---------------------------------------------------------
 USUARIOS_PERMITIDOS = {
+    "cristobal": {"password": "wms2026", "rol": "superadmin", "bodega_asignada": "TODAS"},
     "admin": {"password": "admin2026", "rol": "admin", "bodega_asignada": "TODAS"},
-    "cristobal": {"password": "wms2026", "rol": "admin", "bodega_asignada": "TODAS"},
     "operador1": {"password": "bodega123", "rol": "operario", "bodega_asignada": "BOD-01"},
     "operador2": {"password": "bodega456", "rol": "operario", "bodega_asignada": "BOD-02"},
     "operador3": {"password": "bodega789", "rol": "operario", "bodega_asignada": "BOD-03"},
@@ -309,9 +321,16 @@ else:
     def cambiar_bodega_callback():
         st.session_state.bodega_activa = st.session_state.selector_bodega_temp
 
-    # BARRA LATERAL CON BADGES
-    role_class = "role-badge-admin" if st.session_state.rol_actual == "admin" else "role-badge-operario"
-    role_text = "👑 Administrador" if st.session_state.rol_actual == "admin" else "👷 Operario"
+    # BARRA LATERAL CON BADGES CORREGIDOS
+    if st.session_state.rol_actual == "superadmin":
+        role_class = "role-badge-superadmin"
+        role_text = "⚡ SuperAdmin"
+    elif st.session_state.rol_actual == "admin":
+        role_class = "role-badge-admin"
+        role_text = "👑 Administrador"
+    else:
+        role_class = "role-badge-operario"
+        role_text = "👷 Operario"
 
     st.sidebar.markdown(f"**Usuario:** <span class='user-badge'>{st.session_state.usuario_actual}</span>", unsafe_allow_html=True)
     st.sidebar.markdown(f"**Rol:** <span class='{role_class}'>{role_text}</span>", unsafe_allow_html=True)
@@ -320,7 +339,7 @@ else:
     df_bodegas = obtener_df("SELECT id_bodega, nombre FROM bodegas")
     dict_bodegas = dict(zip(df_bodegas["id_bodega"], df_bodegas["nombre"])) if not df_bodegas.empty else {}
 
-    if st.session_state.rol_actual == "admin":
+    if st.session_state.rol_actual in ["superadmin", "admin"]:
         st.sidebar.subheader("🏢 Seleccionar Bodega Activa")
         opciones_bodega = list(dict_bodegas.keys())
         idx_def = opciones_bodega.index(st.session_state.bodega_activa) if st.session_state.bodega_activa in opciones_bodega else 0
@@ -385,31 +404,41 @@ else:
     )
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # NAVEGACIÓN Y MÓDULOS (CARGA MASIVA SOLO PARA ADMIN)
-    if st.session_state.rol_actual == "admin":
+    # PERMISOS DE MÓDULOS SEGÚN ROL (CARGA MASIVA EXCLUSIVO DE SUPERADMIN)
+    if st.session_state.rol_actual == "superadmin":
         modulos_disponibles = [
-            "🗺️ Mapa 2D & Estado",
-            "📥 Recepción e Ingreso",
-            "🔄 Reubicación de Casillas",
-            "🛒 Picking / Despacho",
-            "📊 Dashboard & KPIs",
-            "📜 Historial Kárdex",
-            "📤 Carga Masiva (Excel)",
-            "🏷️ Generador de Etiquetas QR",
+            "MAPA 2D & ESTADO",
+            "RECEPCIÓN E INGRESO",
+            "REUBICACIÓN DE CASILLAS",
+            "PICKING / DESPACHO",
+            "DASHBOARD & KPIS",
+            "HISTORIAL KÁRDEX",
+            "CARGA MASIVA (EXCEL)",
+            "GENERADOR DE ETIQUETAS QR",
+        ]
+    elif st.session_state.rol_actual == "admin":
+        modulos_disponibles = [
+            "MAPA 2D & ESTADO",
+            "RECEPCIÓN E INGRESO",
+            "REUBICACIÓN DE CASILLAS",
+            "PICKING / DESPACHO",
+            "DASHBOARD & KPIS",
+            "HISTORIAL KÁRDEX",
+            "GENERADOR DE ETIQUETAS QR",
         ]
     else:
         modulos_disponibles = [
-            "🗺️ Mapa 2D & Estado",
-            "📥 Recepción e Ingreso",
-            "🔄 Reubicación de Casillas",
-            "🛒 Picking / Despacho",
-            "🏷️ Generador de Etiquetas QR",
+            "MAPA 2D & ESTADO",
+            "RECEPCIÓN E INGRESO",
+            "REUBICACIÓN DE CASILLAS",
+            "PICKING / DESPACHO",
+            "GENERADOR DE ETIQUETAS QR",
         ]
 
     menu = st.sidebar.radio("Navegación / Módulos", modulos_disponibles)
 
     # MAPA 2D
-    if menu == "🗺️ Mapa 2D & Estado":
+    if menu == "MAPA 2D & ESTADO":
         st.header(f"Mapa de Ocupación Física 2D ({st.session_state.bodega_activa})")
 
         query = """
@@ -541,7 +570,7 @@ else:
             st.dataframe(df_tabla_display[["id_ubicacion", "estado", "sku", "producto", "cantidad", "capacidad", "Ocupacion_%"]], use_container_width=True)
 
     # RECEPCIÓN
-    elif menu == "📥 Recepción e Ingreso":
+    elif menu == "RECEPCIÓN E INGRESO":
         st.header(f"Ingreso de Stock a Bodega ({st.session_state.bodega_activa})")
 
         if st.session_state.mensaje_exito_ingreso:
@@ -606,7 +635,7 @@ else:
                         st.rerun()
 
     # REUBICACIÓN
-    elif menu == "🔄 Reubicación de Casillas":
+    elif menu == "REUBICACIÓN DE CASILLAS":
         st.header(f"Reubicación Interna ({st.session_state.bodega_activa})")
 
         if st.session_state.mensaje_exito_reubicacion:
@@ -698,7 +727,7 @@ else:
                 st.rerun()
 
     # PICKING
-    elif menu == "🛒 Picking / Despacho":
+    elif menu == "PICKING / DESPACHO":
         st.header(f"Picking y Despacho ({st.session_state.bodega_activa})")
 
         if st.session_state.mensaje_exito_picking:
@@ -818,7 +847,7 @@ else:
                     st.button("✅ Confirmar y Finalizar Picking", type="primary", use_container_width=True, on_click=confirmar_picking_callback)
 
     # DASHBOARD
-    elif menu == "📊 Dashboard & KPIs":
+    elif menu == "DASHBOARD & KPIS":
         st.header(f"Analítica de Operación y Reportes - {st.session_state.bodega_activa}")
 
         # BLOQUE 1: MÉTRICAS PRINCIPALES DE INVENTARIO
@@ -1055,7 +1084,7 @@ else:
         )
 
     # KÁRDEX
-    elif menu == "📜 Historial Kárdex":
+    elif menu == "HISTORIAL KÁRDEX":
         st.header(f"Trazabilidad ({st.session_state.bodega_activa})")
         df_kardex = obtener_df("SELECT id_movimiento, fecha_hora, tipo_movimiento, sku, id_ubicacion, cantidad, id_bodega FROM historial_movimientos WHERE id_bodega = %s ORDER BY fecha_hora DESC", (st.session_state.bodega_activa,))
 
@@ -1064,10 +1093,10 @@ else:
         else:
             st.dataframe(df_kardex, use_container_width=True)
 
-    # CARGA MASIVA EXCEL (EXCLUSIVO ADMINISTRADOR)
-    elif menu == "📤 Carga Masiva (Excel)":
-        st.header("📤 Carga Masiva desde Excel / CSV")
-        st.info(f"Permite la importación masiva de datos a la base de datos. La carga de inventario afectará a la bodega activa: **{st.session_state.bodega_activa}**.")
+    # CARGA MASIVA EXCEL (EXCLUSIVO SUPERADMIN)
+    elif menu == "CARGA MASIVA (EXCEL)":
+        st.header("📤 Carga Masiva desde Excel / CSV (Módulo SuperAdmin)")
+        st.info(f"Permite la importación masiva de datos para el setup inicial. La carga de inventario afectará a la bodega activa: **{st.session_state.bodega_activa}**.")
 
         tab_prod, tab_inv = st.tabs(["1. Cargar Productos (Catálogo Master)", "2. Cargar Inventario Inicial por Casilla"])
 
@@ -1144,7 +1173,7 @@ else:
                     st.error(f"❌ Error procesando el archivo: {e}")
 
     # QR
-    elif menu == "🏷️ Generador de Etiquetas QR":
+    elif menu == "GENERADOR DE ETIQUETAS QR":
         st.header("Generador de Etiquetas QR")
         opcion_qr = st.radio("Tipo de etiqueta", ["Ubicación / Casilla", "Producto / SKU"])
 
