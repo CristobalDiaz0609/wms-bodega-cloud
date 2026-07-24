@@ -11,7 +11,7 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# ESTILOS CSS PERSONALIZADOS (UI/UX SAAS PROFESIONAL)
+# ESTILOS CSS PERSONALIZADOS (UI/UX COMPATIBLE Y PULIDO)
 # ---------------------------------------------------------
 CSS_EMPRESARIAL = """
 <style>
@@ -34,101 +34,91 @@ CSS_EMPRESARIAL = """
     section[data-testid="stSidebar"] h2, 
     section[data-testid="stSidebar"] h3, 
     section[data-testid="stSidebar"] p, 
-    section[data-testid="stSidebar"] label,
-    section[data-testid="stSidebar"] span {
+    section[data-testid="stSidebar"] label {
         color: #FFFFFF !important;
     }
 
-    /* 1. BADGES DE USUARIO Y ROL (DISEÑO ELEGANTE Y CONSISTENTE) */
+    /* 1. BADGES DE USUARIO Y ROL CON ALTO CONTRASTE */
     .user-badge {
         display: inline-block;
-        background-color: rgba(255, 255, 255, 0.12);
-        color: #F8FAFC !important;
-        padding: 4px 10px;
+        background-color: #2D4B7C;
+        color: #FFFFFF !important;
+        padding: 4px 12px;
         border-radius: 6px;
         font-size: 0.85rem;
         font-weight: 600;
-        border: 1px solid rgba(255, 255, 255, 0.2);
-        letter-spacing: 0.5px;
+        border: 1px solid #4A6B9D;
     }
     
     .role-badge-admin {
         display: inline-block;
         background-color: #FEF3C7 !important;
         color: #78350F !important;
-        padding: 4px 10px;
+        padding: 4px 12px;
         border-radius: 6px;
         font-size: 0.85rem;
         font-weight: 700;
         border: 1px solid #F59E0B !important;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     }
 
     .role-badge-operario {
         display: inline-block;
         background-color: #E0E7FF !important;
         color: #3730A3 !important;
-        padding: 4px 10px;
+        padding: 4px 12px;
         border-radius: 6px;
         font-size: 0.85rem;
         font-weight: 700;
         border: 1px solid #6366F1 !important;
     }
 
-    /* 2. MENÚ DE NAVEGACIÓN ESTILIZADO (TIPO SAAS REAL) */
-    section[data-testid="stSidebar"] .stRadio > div {
-        gap: 6px;
-    }
-    
-    /* Ocultar los círculos nativos de Streamlit */
-    section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label div:first-child {
-        display: none !important;
-    }
-
-    /* Convertir cada ítem en un botón/tarjeta de menú */
+    /* 2. MENÚ DE NAVEGACIÓN (TEXTO VISIBLE Y ESTILIZADO) */
     section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label {
-        background-color: rgba(255, 255, 255, 0.05);
-        padding: 10px 14px !important;
+        background-color: rgba(255, 255, 255, 0.08);
+        padding: 8px 12px !important;
         border-radius: 8px !important;
-        cursor: pointer;
-        transition: all 0.25s ease !important;
+        margin-bottom: 4px;
+        transition: all 0.2s ease;
         border: 1px solid transparent;
         width: 100%;
-        margin-bottom: 2px;
     }
 
-    /* Hover sobre los ítems del menú */
+    section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label p,
+    section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label span {
+        color: #FFFFFF !important;
+        font-size: 0.95rem !important;
+        font-weight: 500 !important;
+    }
+
     section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label:hover {
-        background-color: rgba(255, 255, 255, 0.15) !important;
-        border-color: rgba(255, 255, 255, 0.2);
+        background-color: rgba(255, 255, 255, 0.18) !important;
     }
 
-    /* Ítem Seleccionado / Activo */
     section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label:has(input:checked) {
         background-color: #2D4B7C !important;
         border-left: 4px solid #3B82F6 !important;
         border-top: 1px solid rgba(255, 255, 255, 0.2);
         border-right: 1px solid rgba(255, 255, 255, 0.2);
         border-bottom: 1px solid rgba(255, 255, 255, 0.2);
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
     }
 
-    /* 3. BOTÓN CERRAR SESIÓN PLANO Y SOBRIO */
-    div.logout-container button {
-        background-color: rgba(239, 68, 68, 0.15) !important;
-        color: #FCA5A5 !important;
-        border: 1px solid rgba(239, 68, 68, 0.3) !important;
+    /* 3. BOTÓN CERRAR SESIÓN (ROJO CARMESÍ SOBRIO) */
+    div.logout-btn button {
+        background-color: #991B1B !important;
+        color: #FFFFFF !important;
+        border: none !important;
         border-radius: 8px !important;
         font-weight: 600 !important;
+        padding: 8px 16px !important;
         transition: all 0.2s ease !important;
     }
-    div.logout-container button:hover {
+    div.logout-btn button:hover {
         background-color: #DC2626 !important;
         color: #FFFFFF !important;
-        border-color: #DC2626 !important;
+        box-shadow: 0 4px 10px rgba(220, 38, 38, 0.3);
     }
 
-    /* Botones primarios en el cuerpo de la app */
+    /* Botones primarios del cuerpo */
     div.stButton > button[kind="primary"] {
         background-color: #1F3864 !important;
         color: #FFFFFF !important;
@@ -142,7 +132,7 @@ CSS_EMPRESARIAL = """
         box-shadow: 0 4px 10px rgba(31, 56, 100, 0.3);
     }
 
-    /* Cajas de Selección en la barra lateral */
+    /* Selectbox en barra lateral */
     section[data-testid="stSidebar"] div[data-baseweb="select"] > div {
         background-color: #2D4B7C !important;
         color: #FFFFFF !important;
@@ -300,7 +290,7 @@ else:
     def cambiar_bodega_callback():
         st.session_state.bodega_activa = st.session_state.selector_bodega_temp
 
-    # BARRA LATERAL CON BADGES PULIDOS
+    # BARRA LATERAL CON BADGES CORREGIDOS
     role_class = "role-badge-admin" if st.session_state.rol_actual == "admin" else "role-badge-operario"
     role_text = "👑 Administrador" if st.session_state.rol_actual == "admin" else "👷 Operario"
 
@@ -328,7 +318,7 @@ else:
         st.sidebar.markdown(f"🏢 **Bodega Asignada:** `{st.session_state.bodega_usuario}` - {dict_bodegas.get(st.session_state.bodega_usuario, '')}")
         st.session_state.bodega_activa = st.session_state.bodega_usuario
 
-    st.sidebar.markdown("<div class='logout-container'>", unsafe_allow_html=True)
+    st.sidebar.markdown("<div class='logout-btn'>", unsafe_allow_html=True)
     if st.sidebar.button("Cerrar Sesión", use_container_width=True):
         logout()
     st.sidebar.markdown("</div>", unsafe_allow_html=True)
