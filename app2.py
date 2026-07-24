@@ -11,7 +11,7 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# ESTILOS CSS PERSONALIZADOS (PALETA EMPRESARIAL CORREGIDA)
+# ESTILOS CSS PERSONALIZADOS (UI/UX SAAS PROFESIONAL)
 # ---------------------------------------------------------
 CSS_EMPRESARIAL = """
 <style>
@@ -25,8 +25,110 @@ CSS_EMPRESARIAL = """
         color: #1F3864 !important;
         font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     }
+
+    /* BARRA LATERAL (SIDEBAR) */
+    section[data-testid="stSidebar"] {
+        background-color: #1F3864 !important;
+    }
+    section[data-testid="stSidebar"] h1, 
+    section[data-testid="stSidebar"] h2, 
+    section[data-testid="stSidebar"] h3, 
+    section[data-testid="stSidebar"] p, 
+    section[data-testid="stSidebar"] label,
+    section[data-testid="stSidebar"] span {
+        color: #FFFFFF !important;
+    }
+
+    /* 1. BADGES DE USUARIO Y ROL (DISEÑO ELEGANTE Y CONSISTENTE) */
+    .user-badge {
+        display: inline-block;
+        background-color: rgba(255, 255, 255, 0.12);
+        color: #F8FAFC !important;
+        padding: 4px 10px;
+        border-radius: 6px;
+        font-size: 0.85rem;
+        font-weight: 600;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        letter-spacing: 0.5px;
+    }
     
-    /* Botones primarios */
+    .role-badge-admin {
+        display: inline-block;
+        background-color: #FEF3C7 !important;
+        color: #78350F !important;
+        padding: 4px 10px;
+        border-radius: 6px;
+        font-size: 0.85rem;
+        font-weight: 700;
+        border: 1px solid #F59E0B !important;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+
+    .role-badge-operario {
+        display: inline-block;
+        background-color: #E0E7FF !important;
+        color: #3730A3 !important;
+        padding: 4px 10px;
+        border-radius: 6px;
+        font-size: 0.85rem;
+        font-weight: 700;
+        border: 1px solid #6366F1 !important;
+    }
+
+    /* 2. MENÚ DE NAVEGACIÓN ESTILIZADO (TIPO SAAS REAL) */
+    section[data-testid="stSidebar"] .stRadio > div {
+        gap: 6px;
+    }
+    
+    /* Ocultar los círculos nativos de Streamlit */
+    section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label div:first-child {
+        display: none !important;
+    }
+
+    /* Convertir cada ítem en un botón/tarjeta de menú */
+    section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label {
+        background-color: rgba(255, 255, 255, 0.05);
+        padding: 10px 14px !important;
+        border-radius: 8px !important;
+        cursor: pointer;
+        transition: all 0.25s ease !important;
+        border: 1px solid transparent;
+        width: 100%;
+        margin-bottom: 2px;
+    }
+
+    /* Hover sobre los ítems del menú */
+    section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label:hover {
+        background-color: rgba(255, 255, 255, 0.15) !important;
+        border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    /* Ítem Seleccionado / Activo */
+    section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label:has(input:checked) {
+        background-color: #2D4B7C !important;
+        border-left: 4px solid #3B82F6 !important;
+        border-top: 1px solid rgba(255, 255, 255, 0.2);
+        border-right: 1px solid rgba(255, 255, 255, 0.2);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+
+    /* 3. BOTÓN CERRAR SESIÓN PLANO Y SOBRIO */
+    div.logout-container button {
+        background-color: rgba(239, 68, 68, 0.15) !important;
+        color: #FCA5A5 !important;
+        border: 1px solid rgba(239, 68, 68, 0.3) !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        transition: all 0.2s ease !important;
+    }
+    div.logout-container button:hover {
+        background-color: #DC2626 !important;
+        color: #FFFFFF !important;
+        border-color: #DC2626 !important;
+    }
+
+    /* Botones primarios en el cuerpo de la app */
     div.stButton > button[kind="primary"] {
         background-color: #1F3864 !important;
         color: #FFFFFF !important;
@@ -40,58 +142,18 @@ CSS_EMPRESARIAL = """
         box-shadow: 0 4px 10px rgba(31, 56, 100, 0.3);
     }
 
-    /* BARRA LATERAL (SIDEBAR) - CORRECCIÓN DE CONTRASTE */
-    section[data-testid="stSidebar"] {
-        background-color: #1F3864 !important;
-    }
-    section[data-testid="stSidebar"] h1, 
-    section[data-testid="stSidebar"] h2, 
-    section[data-testid="stSidebar"] h3, 
-    section[data-testid="stSidebar"] p, 
-    section[data-testid="stSidebar"] label,
-    section[data-testid="stSidebar"] span {
-        color: #FFFFFF !important;
-    }
-    
-    /* Recuadros de código tipo `admin` en la barra lateral */
-    section[data-testid="stSidebar"] code {
-        background-color: #2D4B7C !important;
-        color: #FFFFFF !important;
-        border: 1px solid #4A6B9D !important;
-        font-weight: bold;
-    }
-
-    /* Cajas de selección (Selectbox) e Inputs en la barra lateral */
+    /* Cajas de Selección en la barra lateral */
     section[data-testid="stSidebar"] div[data-baseweb="select"] > div {
         background-color: #2D4B7C !important;
         color: #FFFFFF !important;
         border: 1px solid #4A6B9D !important;
+        border-radius: 8px;
     }
     section[data-testid="stSidebar"] div[data-baseweb="select"] span {
         color: #FFFFFF !important;
     }
     section[data-testid="stSidebar"] svg {
         fill: #FFFFFF !important;
-    }
-
-    /* Menú desplegable cuando se abre el Selectbox */
-    ul[data-baseweb="menu"] {
-        background-color: #1F3864 !important;
-    }
-    ul[data-baseweb="menu"] li {
-        color: #FFFFFF !important;
-    }
-
-    /* Botón de Cerrar Sesión en la barra lateral */
-    section[data-testid="stSidebar"] div.stButton > button {
-        background-color: #2D4B7C !important;
-        color: #FFFFFF !important;
-        border: 1px solid #4A6B9D !important;
-        font-weight: 600;
-    }
-    section[data-testid="stSidebar"] div.stButton > button:hover {
-        background-color: #3B5E96 !important;
-        color: #FFFFFF !important;
     }
 
     /* Tarjetas de Métricas (KPIs) */
@@ -238,10 +300,13 @@ else:
     def cambiar_bodega_callback():
         st.session_state.bodega_activa = st.session_state.selector_bodega_temp
 
-    # BARRA LATERAL
-    rol_label = "👑 Administrador" if st.session_state.rol_actual == "admin" else "👷 Operario"
-    st.sidebar.markdown(f"👤 **Usuario:** `{st.session_state.usuario_actual}`")
-    st.sidebar.markdown(f"🏷️ **Rol:** `{rol_label}`")
+    # BARRA LATERAL CON BADGES PULIDOS
+    role_class = "role-badge-admin" if st.session_state.rol_actual == "admin" else "role-badge-operario"
+    role_text = "👑 Administrador" if st.session_state.rol_actual == "admin" else "👷 Operario"
+
+    st.sidebar.markdown(f"**Usuario:** <span class='user-badge'>{st.session_state.usuario_actual}</span>", unsafe_allow_html=True)
+    st.sidebar.markdown(f"**Rol:** <span class='{role_class}'>{role_text}</span>", unsafe_allow_html=True)
+    st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
     df_bodegas = obtener_df("SELECT id_bodega, nombre FROM bodegas")
     dict_bodegas = dict(zip(df_bodegas["id_bodega"], df_bodegas["nombre"])) if not df_bodegas.empty else {}
@@ -263,8 +328,10 @@ else:
         st.sidebar.markdown(f"🏢 **Bodega Asignada:** `{st.session_state.bodega_usuario}` - {dict_bodegas.get(st.session_state.bodega_usuario, '')}")
         st.session_state.bodega_activa = st.session_state.bodega_usuario
 
-    if st.sidebar.button("🚪 Cerrar Sesión"):
+    st.sidebar.markdown("<div class='logout-container'>", unsafe_allow_html=True)
+    if st.sidebar.button("Cerrar Sesión", use_container_width=True):
         logout()
+    st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
     st.sidebar.markdown("---")
 
@@ -658,7 +725,7 @@ else:
                             else:
                                 despacho_casilla = por_despachar
                                 nueva_cant = cant_en_casilla - por_despachar
-                                operaciones_db.append({"tipo": "UPDATE", "id_inventario": id_inv, "nueva_cantidad": nueva_cant, "id_inventario": id_inv, "id_ubicacion": ubi, "sku": sku_clean, "cantidad": despacho_casilla})
+                                operaciones_db.append({"tipo": "UPDATE", "id_inventario": id_inv, "nueva_cantidad": nueva_cant, "id_ubicacion": ubi, "sku": sku_clean, "cantidad": despacho_casilla})
 
                             por_despachar -= despacho_casilla
                             puntos_extraccion.append({"SKU": sku_clean, "Ubicación": ubi, "Extraer": despacho_casilla, "x": cx, "y": cy})
