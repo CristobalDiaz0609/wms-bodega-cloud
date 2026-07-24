@@ -126,7 +126,7 @@ CSS_EMPRESARIAL = """
         border-bottom: 1px solid rgba(255, 255, 255, 0.2);
     }
 
-    /* 4. BOTÓN CERRAR SESIÓN (SELECCIÓN DIRECTA SIN DEPENDER DE HTML WRAPPERS) */
+    /* 4. BOTÓN CERRAR SESIÓN ESTILIZADO */
     section[data-testid="stSidebar"] div.stButton > button {
         background-color: #FEF3C7 !important;
         border: 1px solid #F59E0B !important;
@@ -309,7 +309,7 @@ else:
     def cambiar_bodega_callback():
         st.session_state.bodega_activa = st.session_state.selector_bodega_temp
 
-    # BARRA LATERAL CON BADGES CORREGIDOS
+    # BARRA LATERAL CON BADGES
     role_class = "role-badge-admin" if st.session_state.rol_actual == "admin" else "role-badge-operario"
     role_text = "👑 Administrador" if st.session_state.rol_actual == "admin" else "👷 Operario"
 
@@ -428,6 +428,19 @@ else:
         else:
             df_mapa["Ocupacion_%"] = (df_mapa["cantidad"] / df_mapa["capacidad"]) * 100
 
+            # LÓGICA DE CATEGORIZACIÓN DE COLOR DE CASILLA CORREGIDA
+            def calcular_estado_grafico(row):
+                if row["estado"] == "Inhabilitado":
+                    return "Inhabilitado"
+                elif row["cantidad"] == 0:
+                    return "Vacío / Libre"
+                elif row["Ocupacion_%"] >= 100:
+                    return "LLENA"
+                else:
+                    return "Ocupado"
+
+            df_mapa["Estado_Grafico"] = df_mapa.apply(calcular_estado_grafico, axis=1)
+
             df_skus_existentes = (
                 df_mapa[df_mapa["sku"] != "Vacío"][["sku", "producto"]]
                 .drop_duplicates()
@@ -445,6 +458,15 @@ else:
 
             df_mapa_plot = df_mapa.copy()
 
+            # MAPA DE COLORES REGLA USUARIO
+            color_map = {
+                "Vacío / Libre": "#10B981", # Verde
+                "Ocupado": "#EF4444",       # Rojo
+                "LLENA": "#8B5CF6",         # Morado
+                "Inhabilitado": "#94A3B8",  # Gris
+                "Otro / Sin Coincidencia": "#E2E8F0"
+            }
+
             if sku_buscado_sel != "🔍 Mostrar Todos los Productos":
                 sku_clean_busqueda = sku_buscado_sel.split(" - ")[0]
                 coincidencias = df_mapa_plot[df_mapa_plot["sku"] == sku_clean_busqueda]
@@ -457,22 +479,14 @@ else:
                     )
 
                 df_mapa_plot["Estado_Grafico"] = df_mapa_plot.apply(
-                    lambda r: r["estado"] if r["sku"] == sku_clean_busqueda else "Otro / Sin Coincidencia",
+                    lambda r: r["Estado_Grafico"] if r["sku"] == sku_clean_busqueda else "Otro / Sin Coincidencia",
                     axis=1,
                 )
                 df_mapa_plot["Tamaño_Punto"] = df_mapa_plot.apply(
                     lambda r: 24 if r["sku"] == sku_clean_busqueda else 12, axis=1
                 )
-                color_map = {
-                    "Libre": "#10B981",
-                    "Ocupado": "#3B82F6",
-                    "Inhabilitado": "#94A3B8",
-                    "Otro / Sin Coincidencia": "#E2E8F0",
-                }
             else:
-                df_mapa_plot["Estado_Grafico"] = df_mapa_plot["estado"]
                 df_mapa_plot["Tamaño_Punto"] = 18
-                color_map = {"Libre": "#10B981", "Ocupado": "#3B82F6", "Inhabilitado": "#94A3B8"}
 
             fig = px.scatter(
                 df_mapa_plot,
@@ -993,7 +1007,7 @@ else:
                     values="cantidad",
                     hole=0.4,
                     color="estado",
-                    color_discrete_map={"Libre": "#10B981", "Ocupado": "#3B82F6", "Inhabilitado": "#94A3B8"}
+                    color_discrete_map={"Libre": "#10B981", "Ocupado": "#EF4444", "Inhabilitado": "#94A3B8"}
                 )
                 fig_pie.update_traces(textinfo="percent+label")
                 fig_pie.update_layout(height=380, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
