@@ -59,6 +59,7 @@ CSS_EMPRESARIAL = """
         font-size: 0.85rem;
         font-weight: 700;
         border: 1px solid #F59E0B !important;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     }
 
     .role-badge-operario {
@@ -73,6 +74,10 @@ CSS_EMPRESARIAL = """
     }
 
     /* 2. ELIMINAR BORDE ROJO DE FOCO EN SELECTBOX */
+    section[data-testid="stSidebar"] div[data-baseweb="select"],
+    section[data-testid="stSidebar"] div[data-baseweb="select"] * {
+        border-color: #4A6B9D !important;
+    }
     section[data-testid="stSidebar"] div[data-baseweb="select"] > div,
     section[data-testid="stSidebar"] div[data-baseweb="select"] > div:focus,
     section[data-testid="stSidebar"] div[data-baseweb="select"] > div:focus-within,
@@ -121,21 +126,24 @@ CSS_EMPRESARIAL = """
         border-bottom: 1px solid rgba(255, 255, 255, 0.2);
     }
 
-    /* 4. BOTÓN CERRAR SESIÓN ESTILIZADO Y CONSISTENTE */
-    div.logout-wrapper button {
-        background-color: rgba(255, 255, 255, 0.08) !important;
-        color: #FFFFFF !important;
-        border: 1px solid rgba(255, 255, 255, 0.4) !important;
-        border-radius: 8px !important;
-        font-weight: 600 !important;
-        transition: all 0.25s ease !important;
-        width: 100% !important;
-        padding: 8px 16px !important;
-    }
-    div.logout-wrapper button:hover {
+    /* 4. BOTÓN CERRAR SESIÓN ESTILIZADO COMO EL BADGE DE ADMINISTRADOR */
+    div.logout-wrapper button, 
+    div.logout-wrapper button:focus, 
+    div.logout-wrapper button:active {
         background-color: #FEF3C7 !important;
         color: #78350F !important;
-        border-color: #F59E0B !important;
+        border: 1px solid #F59E0B !important;
+        border-radius: 8px !important;
+        font-weight: 700 !important;
+        padding: 8px 16px !important;
+        transition: all 0.25s ease !important;
+        width: 100% !important;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important;
+    }
+    div.logout-wrapper button:hover {
+        background-color: #FDE68A !important;
+        color: #451A03 !important;
+        border-color: #D97706 !important;
         box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3) !important;
     }
 
