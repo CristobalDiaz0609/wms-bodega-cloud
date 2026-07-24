@@ -385,6 +385,7 @@ else:
     )
     st.markdown("<br>", unsafe_allow_html=True)
 
+    # NAVEGACIÓN Y MÓDULOS (CARGA MASIVA SOLO PARA ADMIN)
     if st.session_state.rol_actual == "admin":
         modulos_disponibles = [
             "🗺️ Mapa 2D & Estado",
@@ -393,6 +394,7 @@ else:
             "🛒 Picking / Despacho",
             "📊 Dashboard & KPIs",
             "📜 Historial Kárdex",
+            "📤 Carga Masiva (Excel)",
             "🏷️ Generador de Etiquetas QR",
         ]
     else:
@@ -428,7 +430,6 @@ else:
         else:
             df_mapa["Ocupacion_%"] = (df_mapa["cantidad"] / df_mapa["capacidad"]) * 100
 
-            # LÓGICA DE CATEGORIZACIÓN DE COLOR DE CASILLA CORREGIDA
             def calcular_estado_grafico(row):
                 if row["estado"] == "Inhabilitado":
                     return "Inhabilitado"
@@ -458,7 +459,6 @@ else:
 
             df_mapa_plot = df_mapa.copy()
 
-            # MAPA DE COLORES REGLA USUARIO
             color_map = {
                 "Vacío / Libre": "#10B981", # Verde
                 "Ocupado": "#EF4444",       # Rojo
@@ -821,9 +821,7 @@ else:
     elif menu == "📊 Dashboard & KPIs":
         st.header(f"Analítica de Operación y Reportes - {st.session_state.bodega_activa}")
 
-        # ---------------------------------------------------------
         # BLOQUE 1: MÉTRICAS PRINCIPALES DE INVENTARIO
-        # ---------------------------------------------------------
         st.subheader("📌 Métricas Principales de Inventario")
 
         total_casillas = obtener_df("SELECT COUNT(*) as t FROM ubicaciones WHERE id_bodega = %s", (st.session_state.bodega_activa,))["t"].values[0] or 1
@@ -853,9 +851,7 @@ else:
 
         st.markdown("---")
 
-        # ---------------------------------------------------------
         # BLOQUE 2: RENDIMIENTO DE PICKING / DESPACHOS
-        # ---------------------------------------------------------
         st.subheader("🛒 Rendimiento de Picking / Despachos")
 
         picking_mes_actual = obtener_df("""
@@ -884,9 +880,7 @@ else:
 
         st.markdown("---")
 
-        # ---------------------------------------------------------
         # BLOQUE 3: TENDENCIA DIARIA DE PICKING CON FILTRO DE SKU
-        # ---------------------------------------------------------
         st.subheader("📈 Tendencia Diaria de Picking (Días 1 al 31)")
 
         df_skus_picking = obtener_df("""
@@ -963,9 +957,7 @@ else:
 
         st.markdown("---")
 
-        # ---------------------------------------------------------
         # BLOQUE 4: GRÁFICOS DE DONA / ANILLO COMPARATIVOS
-        # ---------------------------------------------------------
         col_g1, col_g2 = st.columns(2)
 
         with col_g1:
@@ -1007,7 +999,7 @@ else:
                     values="cantidad",
                     hole=0.4,
                     color="estado",
-                    color_discrete_map={"Libre": "#10B981", "Ocupado": "#EF4444", "Inhabilitado": "#94A3B8"}
+                    color_discrete_map={"Libre": "#10B981", "Ocupado": "#3B82F6", "Inhabilitado": "#94A3B8"}
                 )
                 fig_pie.update_traces(textinfo="percent+label")
                 fig_pie.update_layout(height=380, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
@@ -1015,9 +1007,7 @@ else:
 
         st.markdown("---")
 
-        # ---------------------------------------------------------
         # BLOQUE 5: REPORTES DE SKUs SIN MOVIMIENTO (BAJA ROTACIÓN)
-        # ---------------------------------------------------------
         st.subheader("🧊 Reporte de SKUs Sin Movimiento (Baja Rotación / Stock Inactivo)")
 
         dias_umbral = st.slider("🗿 Seleccionar umbral de inactividad (Días sin movimiento):", min_value=0, max_value=90, value=0)
@@ -1045,9 +1035,7 @@ else:
 
         st.markdown("---")
 
-        # ---------------------------------------------------------
         # BLOQUE 6: EXPORTAR REPORTE EXCEL COMPLETO
-        # ---------------------------------------------------------
         df_inv_exp = obtener_df("SELECT i.*, u.id_bodega FROM inventario i JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion WHERE u.id_bodega = %s", (st.session_state.bodega_activa,))
         df_kardex_exp = obtener_df("SELECT * FROM historial_movimientos WHERE id_bodega = %s ORDER BY fecha_hora DESC", (st.session_state.bodega_activa,))
 
@@ -1075,6 +1063,85 @@ else:
             st.info(f"No hay movimientos registrados en {st.session_state.bodega_activa}.")
         else:
             st.dataframe(df_kardex, use_container_width=True)
+
+    # CARGA MASIVA EXCEL (EXCLUSIVO ADMINISTRADOR)
+    elif menu == "📤 Carga Masiva (Excel)":
+        st.header("📤 Carga Masiva desde Excel / CSV")
+        st.info(f"Permite la importación masiva de datos a la base de datos. La carga de inventario afectará a la bodega activa: **{st.session_state.bodega_activa}**.")
+
+        tab_prod, tab_inv = st.tabs(["1. Cargar Productos (Catálogo Master)", "2. Cargar Inventario Inicial por Casilla"])
+
+        with tab_prod:
+            st.subheader("1. Importar Catálogo Master de Productos")
+            st.markdown("Columnas requeridas en la planilla: `sku`, `nombre`, `capacidad_por_casilla`")
+            
+            archivo_prods = st.file_uploader("Selecciona archivo Excel (.xlsx) o CSV", type=["xlsx", "csv"], key="u_prod")
+            
+            if archivo_prods:
+                try:
+                    df_up_p = pd.read_excel(archivo_prods) if archivo_prods.name.endswith(".xlsx") else pd.read_csv(archivo_prods)
+                    st.markdown("**Vista previa de los datos a cargar:**")
+                    st.dataframe(df_up_p.head(10), use_container_width=True)
+
+                    if st.button("🚀 Confirmar Carga de Productos", type="primary"):
+                        conn = obtener_conexion()
+                        cursor = conn.cursor()
+                        cargados = 0
+                        for _, row in df_up_p.iterrows():
+                            cursor.execute("""
+                                INSERT INTO productos (sku, nombre, capacidad_por_casilla) 
+                                VALUES (%s, %s, %s)
+                                ON DUPLICATE KEY UPDATE nombre=VALUES(nombre), capacidad_por_casilla=VALUES(capacidad_por_casilla);
+                            """, (str(row["sku"]).strip(), str(row["nombre"]).strip(), int(row["capacidad_por_casilla"])))
+                            cargados += 1
+                        conn.commit()
+                        cursor.close()
+                        conn.close()
+                        st.success(f"🎉 ¡Éxito! Se procesaron {cargados} productos en el catálogo master.")
+                except Exception as e:
+                    st.error(f"❌ Error procesando el archivo: {e}")
+
+        with tab_inv:
+            st.subheader(f"2. Importar Inventario Inicial en {st.session_state.bodega_activa}")
+            st.markdown("Columnas requeridas en la planilla: `id_ubicacion`, `sku`, `cantidad`")
+            
+            archivo_inv = st.file_uploader("Selecciona archivo Excel (.xlsx) o CSV", type=["xlsx", "csv"], key="u_inv")
+            
+            if archivo_inv:
+                try:
+                    df_up_i = pd.read_excel(archivo_inv) if archivo_inv.name.endswith(".xlsx") else pd.read_csv(archivo_inv)
+                    st.markdown("**Vista previa de las asignaciones de stock:**")
+                    st.dataframe(df_up_i.head(10), use_container_width=True)
+
+                    if st.button("🚀 Confirmar Carga de Inventario Inicial", type="primary"):
+                        conn = obtener_conexion()
+                        cursor = conn.cursor()
+                        cargados = 0
+                        for _, row in df_up_i.iterrows():
+                            ubi = str(row["id_ubicacion"]).strip()
+                            sku = str(row["sku"]).strip()
+                            cant = int(row["cantidad"])
+
+                            cursor.execute("""
+                                INSERT INTO inventario (id_ubicacion, sku, cantidad) 
+                                VALUES (%s, %s, %s)
+                                ON DUPLICATE KEY UPDATE cantidad=VALUES(cantidad);
+                            """, (ubi, sku, cant))
+                            
+                            cursor.execute("UPDATE ubicaciones SET estado = 'Ocupado' WHERE id_ubicacion = %s AND id_bodega = %s", (ubi, st.session_state.bodega_activa))
+                            
+                            cursor.execute("""
+                                INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad, id_bodega) 
+                                VALUES ('ENTRADA', %s, %s, %s, %s)
+                            """, (sku, ubi, cant, st.session_state.bodega_activa))
+                            cargados += 1
+                        
+                        conn.commit()
+                        cursor.close()
+                        conn.close()
+                        st.success(f"🎉 ¡Éxito! Se asignaron {cargados} casillas de stock en la bodega {st.session_state.bodega_activa}.")
+                except Exception as e:
+                    st.error(f"❌ Error procesando el archivo: {e}")
 
     # QR
     elif menu == "🏷️ Generador de Etiquetas QR":
