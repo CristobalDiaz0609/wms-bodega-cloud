@@ -11,7 +11,7 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# ESTILOS CSS PERSONALIZADOS (UI/UX COMPATIBLE Y PULIDO)
+# ESTILOS CSS PERSONALIZADOS (SAAS PROFESIONAL Y PULIDO)
 # ---------------------------------------------------------
 CSS_EMPRESARIAL = """
 <style>
@@ -38,7 +38,7 @@ CSS_EMPRESARIAL = """
         color: #FFFFFF !important;
     }
 
-    /* 1. BADGES DE USUARIO Y ROL CON ALTO CONTRASTE */
+    /* 1. BADGES DE USUARIO Y ROL */
     .user-badge {
         display: inline-block;
         background-color: #2D4B7C;
@@ -72,7 +72,26 @@ CSS_EMPRESARIAL = """
         border: 1px solid #6366F1 !important;
     }
 
-    /* 2. MENÚ DE NAVEGACIÓN (TEXTO VISIBLE Y ESTILIZADO) */
+    /* 2. ELIMINAR BORDE ROJO DE FOCO EN SELECTBOX */
+    section[data-testid="stSidebar"] div[data-baseweb="select"] > div,
+    section[data-testid="stSidebar"] div[data-baseweb="select"] > div:focus,
+    section[data-testid="stSidebar"] div[data-baseweb="select"] > div:focus-within,
+    section[data-testid="stSidebar"] div[data-baseweb="select"] > div:active {
+        background-color: #2D4B7C !important;
+        color: #FFFFFF !important;
+        border: 1px solid #4A6B9D !important;
+        box-shadow: none !important;
+        outline: none !important;
+        border-radius: 8px !important;
+    }
+    section[data-testid="stSidebar"] div[data-baseweb="select"] span {
+        color: #FFFFFF !important;
+    }
+    section[data-testid="stSidebar"] svg {
+        fill: #FFFFFF !important;
+    }
+
+    /* 3. NAVEGACIÓN Y MENÚ SIDEBAR */
     section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label {
         background-color: rgba(255, 255, 255, 0.08);
         padding: 8px 12px !important;
@@ -102,48 +121,36 @@ CSS_EMPRESARIAL = """
         border-bottom: 1px solid rgba(255, 255, 255, 0.2);
     }
 
-    /* 3. BOTÓN CERRAR SESIÓN (ROJO CARMESÍ SOBRIO) */
-    div.logout-btn button {
-        background-color: #991B1B !important;
+    /* 4. BOTÓN CERRAR SESIÓN ESTILIZADO Y CONSISTENTE */
+    div.logout-wrapper button {
+        background-color: rgba(255, 255, 255, 0.08) !important;
         color: #FFFFFF !important;
-        border: none !important;
+        border: 1px solid rgba(255, 255, 255, 0.4) !important;
         border-radius: 8px !important;
         font-weight: 600 !important;
+        transition: all 0.25s ease !important;
+        width: 100% !important;
         padding: 8px 16px !important;
-        transition: all 0.2s ease !important;
     }
-    div.logout-btn button:hover {
-        background-color: #DC2626 !important;
-        color: #FFFFFF !important;
-        box-shadow: 0 4px 10px rgba(220, 38, 38, 0.3);
-    }
-
-    /* Botones primarios del cuerpo */
-    div.stButton > button[kind="primary"] {
-        background-color: #1F3864 !important;
-        color: #FFFFFF !important;
-        border-radius: 8px;
-        border: none;
-        font-weight: 600;
-        transition: all 0.3s ease;
-    }
-    div.stButton > button[kind="primary"]:hover {
-        background-color: #152746 !important;
-        box-shadow: 0 4px 10px rgba(31, 56, 100, 0.3);
+    div.logout-wrapper button:hover {
+        background-color: #FEF3C7 !important;
+        color: #78350F !important;
+        border-color: #F59E0B !important;
+        box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3) !important;
     }
 
-    /* Selectbox en barra lateral */
-    section[data-testid="stSidebar"] div[data-baseweb="select"] > div {
-        background-color: #2D4B7C !important;
-        color: #FFFFFF !important;
-        border: 1px solid #4A6B9D !important;
-        border-radius: 8px;
-    }
-    section[data-testid="stSidebar"] div[data-baseweb="select"] span {
-        color: #FFFFFF !important;
-    }
-    section[data-testid="stSidebar"] svg {
-        fill: #FFFFFF !important;
+    /* BADGE DE HEADER (BODEGA ACTIVA) */
+    .header-bodega-badge {
+        display: inline-block;
+        background-color: #E2E8F0;
+        color: #1F3864;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-size: 0.95rem;
+        font-weight: 700;
+        border: 1px solid #CBD5E1;
+        margin-left: 12px;
+        vertical-align: middle;
     }
 
     /* Tarjetas de Métricas (KPIs) */
@@ -318,8 +325,8 @@ else:
         st.sidebar.markdown(f"🏢 **Bodega Asignada:** `{st.session_state.bodega_usuario}` - {dict_bodegas.get(st.session_state.bodega_usuario, '')}")
         st.session_state.bodega_activa = st.session_state.bodega_usuario
 
-    st.sidebar.markdown("<div class='logout-btn'>", unsafe_allow_html=True)
-    if st.sidebar.button("Cerrar Sesión", use_container_width=True):
+    st.sidebar.markdown("<div class='logout-wrapper'>", unsafe_allow_html=True)
+    if st.sidebar.button("Cerrar Sesión"):
         logout()
     st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
@@ -359,8 +366,14 @@ else:
             except Exception as e:
                 st.session_state.mensaje_exito_picking = f"❌ Error: {e}"
 
+    # TITULO LIMPIO CON BADGE DE BODEGA SEPARADO
     bodega_nombre_header = dict_bodegas.get(st.session_state.bodega_activa, st.session_state.bodega_activa)
-    st.title(f"📦 WMS 2D - [{st.session_state.bodega_activa}: {bodega_nombre_header}]")
+    st.markdown(
+        f"<h1 style='display: inline-block;'>📦 WMS 2D</h1> "
+        f"<span class='header-bodega-badge'>{st.session_state.bodega_activa} | {bodega_nombre_header}</span>",
+        unsafe_allow_html=True
+    )
+    st.markdown("<br>", unsafe_allow_html=True)
 
     if st.session_state.rol_actual == "admin":
         modulos_disponibles = [
@@ -441,15 +454,15 @@ else:
                     lambda r: 24 if r["sku"] == sku_clean_busqueda else 12, axis=1
                 )
                 color_map = {
-                    "Libre": "#2ecc71",
-                    "Ocupado": "#e74c3c",
-                    "Inhabilitado": "#95a5a6",
-                    "Otro / Sin Coincidencia": "#d6dbdf",
+                    "Libre": "#10B981",
+                    "Ocupado": "#3B82F6",
+                    "Inhabilitado": "#94A3B8",
+                    "Otro / Sin Coincidencia": "#E2E8F0",
                 }
             else:
                 df_mapa_plot["Estado_Grafico"] = df_mapa_plot["estado"]
                 df_mapa_plot["Tamaño_Punto"] = 18
-                color_map = {"Libre": "#2ecc71", "Ocupado": "#e74c3c", "Inhabilitado": "#95a5a6"}
+                color_map = {"Libre": "#10B981", "Ocupado": "#3B82F6", "Inhabilitado": "#94A3B8"}
 
             fig = px.scatter(
                 df_mapa_plot,
@@ -468,19 +481,34 @@ else:
             fig.update_traces(
                 marker=dict(line=dict(width=1, color="#1F3864")),
                 textposition="top center",
-                textfont=dict(size=13, color="#1F3864", family="Segoe UI Black"),
+                textfont=dict(size=12, color="#1F3864", family="Segoe UI Black"),
             )
 
             y_min, y_max = df_mapa_plot["coord_y"].min(), df_mapa_plot["coord_y"].max()
             x_min, x_max = df_mapa_plot["coord_x"].min(), df_mapa_plot["coord_x"].max()
 
             fig.update_layout(
-                xaxis=dict(tickmode="linear", dtick=1, range=[x_min - 0.5, x_max + 0.5]),
-                yaxis=dict(tickmode="linear", dtick=1, range=[y_min - 0.3, y_max + 0.6]),
-                height=550,
+                xaxis=dict(
+                    title="",
+                    showticklabels=False,
+                    range=[x_min - 0.5, x_max + 0.5],
+                    gridcolor="#E2E8F0",
+                    showgrid=True,
+                    zeroline=False
+                ),
+                yaxis=dict(
+                    title="",
+                    showticklabels=False,
+                    range=[y_min - 0.3, y_max + 0.6],
+                    gridcolor="#E2E8F0",
+                    showgrid=True,
+                    zeroline=False
+                ),
+                height=520,
                 showlegend=True,
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)"
+                paper_bgcolor="#FFFFFF",
+                plot_bgcolor="#F8FAFC",
+                margin=dict(l=20, r=20, t=50, b=20)
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -955,7 +983,7 @@ else:
                     values="cantidad",
                     hole=0.4,
                     color="estado",
-                    color_discrete_map={"Libre": "#10B981", "Ocupado": "#EF4444", "Inhabilitado": "#94A3B8"}
+                    color_discrete_map={"Libre": "#10B981", "Ocupado": "#3B82F6", "Inhabilitado": "#94A3B8"}
                 )
                 fig_pie.update_traces(textinfo="percent+label")
                 fig_pie.update_layout(height=380, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
