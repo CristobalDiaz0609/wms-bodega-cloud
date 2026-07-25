@@ -207,34 +207,8 @@ CSS_EMPRESARIAL = """
 st.markdown(CSS_EMPRESARIAL, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# CONTROL DE SESIÓN Y AUTENTICACIÓN
+# FUNCIONES AUXILIARES Y CONEXIÓN A BASE DE DATOS
 # ---------------------------------------------------------
-if "autenticado" not in st.session_state:
-    st.session_state.autenticado = False
-if "usuario_actual" not in st.session_state:
-    st.session_state.usuario_actual = ""
-if "rol_actual" not in st.session_state:
-    st.session_state.rol_actual = ""
-if "bodega_usuario" not in st.session_state:
-    st.session_state.bodega_usuario = ""
-if "bodega_activa" not in st.session_state:
-    st.session_state.bodega_activa = "BOD-01"
-
-if "mensaje_exito_ingreso" not in st.session_state:
-    st.session_state.mensaje_exito_ingreso = None
-if "mensaje_exito_reubicacion" not in st.session_state:
-    st.session_state.mensaje_exito_reubicacion = None
-if "mensaje_exito_picking" not in st.session_state:
-    st.session_state.mensaje_exito_picking = None
-
-if "hoja_ruta_persistente" not in st.session_state:
-    st.session_state.hoja_ruta_persistente = None
-if "distancia_total_persistente" not in st.session_state:
-    st.session_state.distancia_total_persistente = None
-if "operaciones_pendientes_picking" not in st.session_state:
-    st.session_state.operaciones_pendientes_picking = []
-
-
 def obtener_conexion():
     return mysql.connector.connect(
         host=st.secrets["mysql"]["host"],
@@ -264,7 +238,53 @@ def registrar_log_acceso(usuario, rol, bodega, accion="INICIO_SESION"):
             "INSERT INTO log_accesos (usuario, rol, bodega, accion) VALUES (%s, %s, %s, %s)",
             (usuario, rol, bodega, accion)
         )
-    except Exception as e:
+    except Exception:
+        pass
+
+# ---------------------------------------------------------
+# CONTROL DE SESIÓN Y PERSISTENCIA (AUTO-LOGIN VIA URL)
+# ---------------------------------------------------------
+if "autenticado" not in st.session_state:
+    st.session_state.autenticado = False
+if "usuario_actual" not in st.session_state:
+    st.session_state.usuario_actual = ""
+if "rol_actual" not in st.session_state:
+    st.session_state.rol_actual = ""
+if "bodega_usuario" not in st.session_state:
+    st.session_state.bodega_usuario = ""
+if "bodega_activa" not in st.session_state:
+    st.session_state.bodega_activa = "BOD-01"
+
+if "mensaje_exito_ingreso" not in st.session_state:
+    st.session_state.mensaje_exito_ingreso = None
+if "mensaje_exito_reubicacion" not in st.session_state:
+    st.session_state.mensaje_exito_reubicacion = None
+if "mensaje_exito_picking" not in st.session_state:
+    st.session_state.mensaje_exito_picking = None
+
+if "hoja_ruta_persistente" not in st.session_state:
+    st.session_state.hoja_ruta_persistente = None
+if "distancia_total_persistente" not in st.session_state:
+    st.session_state.distancia_total_persistente = None
+if "operaciones_pendientes_picking" not in st.session_state:
+    st.session_state.operaciones_pendientes_picking = []
+
+# AUTO-LOGIN SI SE PERDIÓ LA CONEXIÓN WEBSOCKET PERO SIGUE EL USUARIO EN LA URL
+if not st.session_state.autenticado and "user" in st.query_params:
+    user_url = st.query_params["user"]
+    try:
+        df_user_url = obtener_df(
+            "SELECT usuario, rol, bodega_asignada FROM usuarios WHERE usuario = %s",
+            (user_url,)
+        )
+        if not df_user_url.empty:
+            u_data = df_user_url.iloc[0]
+            st.session_state.autenticado = True
+            st.session_state.usuario_actual = u_data["usuario"]
+            st.session_state.rol_actual = u_data["rol"]
+            st.session_state.bodega_usuario = u_data["bodega_asignada"]
+            st.session_state.bodega_activa = "BOD-01" if u_data["bodega_asignada"] == "TODAS" else u_data["bodega_asignada"]
+    except Exception:
         pass
 
 
@@ -275,7 +295,6 @@ def login():
 
     if st.sidebar.button("Ingresar al Sistema", type="primary"):
         try:
-            # CONSULTA DINÁMICA DE USUARIOS A LA BASE DE DATOS
             df_user = obtener_df(
                 "SELECT usuario, password, rol, bodega_asignada FROM usuarios WHERE usuario = %s AND password = %s",
                 (usuario_input, password_input)
@@ -293,7 +312,9 @@ def login():
                 else:
                     st.session_state.bodega_activa = "BOD-01"
 
-                # REGISTRAR LOG DE ACCESO
+                # PERSISTIR SESIÓN EN LA URL PARA EVITAR DESCONEXIÓN POR INACTIVIDAD
+                st.query_params["user"] = user_data["usuario"]
+
                 registrar_log_acceso(
                     usuario=st.session_state.usuario_actual,
                     rol=st.session_state.rol_actual,
@@ -306,7 +327,7 @@ def login():
             else:
                 st.sidebar.error("❌ Usuario o contraseña incorrectos.")
         except Exception as e:
-            st.sidebar.error(f"❌ Error al consultar usuarios en BD. Verifica que la tabla `usuarios` exista. Error: {e}")
+            st.sidebar.error(f"❌ Error al consultar BD. Verifica la tabla `usuarios`. Error: {e}")
 
 
 def logout():
@@ -317,6 +338,9 @@ def logout():
             bodega=st.session_state.bodega_activa,
             accion="CIERRE_SESION"
         )
+    # LIMPIAR PARÁMETROS EN LA URL EN LOGOUT MANUAL
+    st.query_params.clear()
+
     st.session_state.autenticado = False
     st.session_state.usuario_actual = ""
     st.session_state.rol_actual = ""
@@ -336,9 +360,6 @@ if not st.session_state.autenticado:
     st.info("👈 Por favor, ingresa tus credenciales en la barra lateral para acceder al sistema.")
 
 else:
-    # ---------------------------------------------------------
-    # CALLBACK PARA CAMBIO INSTANTÁNEO DE BODEGA
-    # ---------------------------------------------------------
     def cambiar_bodega_callback():
         st.session_state.bodega_activa = st.session_state.selector_bodega_temp
 
