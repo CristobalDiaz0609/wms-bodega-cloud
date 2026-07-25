@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.express as px
 import qrcode
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image
 
 st.set_page_config(
@@ -203,20 +204,43 @@ CSS_EMPRESARIAL = """
         box-shadow: 0 2px 6px rgba(0,0,0,0.04);
     }
 
-    /* OCULTAR PIE DE PÁGINA E INSIGNIA FLOTANTE DE STREAMLIT */
-    footer {
-        visibility: hidden !important;
-    }
-    .viewerBadge_container__1s5nd, 
-    [data-testid="stStatusWidget"],
-    .stAppBadge,
-    div[class*="viewerBadge"] {
+    /* REGLAS EXTRA DE SEGURIDAD CSS */
+    footer, header, #MainMenu, [data-testid="stHeader"], [data-testid="stToolbar"], .stDeployButton {
         display: none !important;
         visibility: hidden !important;
     }
 </style>
 """
 st.markdown(CSS_EMPRESARIAL, unsafe_allow_html=True)
+
+# SCRIPT JS DE OCULTACIÓN FORZADA EN MÓVILES Y PC
+components.html(
+    """
+    <script>
+        function removeBadges() {
+            const parentDoc = window.parent.document;
+            const selectors = [
+                'footer', 
+                'header', 
+                '#MainMenu', 
+                '[data-testid="stHeader"]', 
+                '[data-testid="stToolbar"]', 
+                '[data-testid="stStatusWidget"]',
+                '.stDeployButton',
+                'div[class*="viewerBadge"]',
+                'div[class*="stAppBadge"]'
+            ];
+            selectors.forEach(sel => {
+                const els = parentDoc.querySelectorAll(sel);
+                els.forEach(el => { el.style.display = 'none'; el.style.visibility = 'hidden'; });
+            });
+        }
+        setInterval(removeBadges, 500);
+    </script>
+    """,
+    height=0,
+    width=0,
+)
 
 # ---------------------------------------------------------
 # FUNCIONES AUXILIARES Y CONEXIÓN A BASE DE DATOS
