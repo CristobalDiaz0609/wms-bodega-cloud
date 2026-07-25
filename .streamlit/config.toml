@@ -4,3 +4,7 @@ primaryColor = "#1F3864"
 backgroundColor = "#F5F7FA"
 secondaryBackgroundColor = "#FFFFFF"
 textColor = "#1F2937"
+
+[client]
+toolbarMode = "minimal"
+showErrorDetails = false
