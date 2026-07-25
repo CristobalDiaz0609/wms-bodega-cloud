@@ -202,6 +202,18 @@ CSS_EMPRESARIAL = """
         padding: 5px;
         box-shadow: 0 2px 6px rgba(0,0,0,0.04);
     }
+
+    /* OCULTAR PIE DE PÁGINA E INSIGNIA FLOTANTE DE STREAMLIT */
+    footer {
+        visibility: hidden !important;
+    }
+    .viewerBadge_container__1s5nd, 
+    [data-testid="stStatusWidget"],
+    .stAppBadge,
+    div[class*="viewerBadge"] {
+        display: none !important;
+        visibility: hidden !important;
+    }
 </style>
 """
 st.markdown(CSS_EMPRESARIAL, unsafe_allow_html=True)
