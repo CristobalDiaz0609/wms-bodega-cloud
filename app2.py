@@ -179,7 +179,7 @@ CSS_EMPRESARIAL = """
 
     /* Tarjetas de Métricas (KPIs) */
     div[data-testid="stMetric"] {
-        background-color: #FFFFFF;
+        background-color: #FFFFFF !important;
         padding: 15px;
         border-radius: 10px;
         box-shadow: 0 2px 8px rgba(0,0,0,0.05);
@@ -197,7 +197,7 @@ CSS_EMPRESARIAL = """
 
     /* Tablas de Datos */
     .stDataFrame {
-        background-color: #FFFFFF;
+        background-color: #FFFFFF !important;
         border-radius: 8px;
         padding: 5px;
         box-shadow: 0 2px 6px rgba(0,0,0,0.04);
@@ -217,14 +217,35 @@ CSS_EMPRESARIAL = """
         }
     }
 
-    /* FIX DEFINITIVO MODO OSCURO / MÓVIL EN MENSADERÍA DE ALERTAS */
-    div[data-testid="stAlert"],
+    /* ========================================================= */
+    /* FIX COMPLETO PARA MODO OSCURO (DARK MODE EN MOVILES Y PC) */
+    /* ========================================================= */
+    
+    /* Contenedor Global de Alertas */
+    div[data-testid="stAlert"] {
+        border-radius: 8px !important;
+        padding: 12px 16px !important;
+    }
+
+    /* Texto dentro de Alertas (Forzar siempre color oscuro visible) */
     div[data-testid="stAlert"] *,
     div[data-testid="stAlert"] p,
     div[data-testid="stAlert"] span,
-    .stAlert p {
-        color: #111827 !important;
-        -webkit-text-fill-color: #111827 !important;
+    div[data-testid="stAlert"] div {
+        color: #1F2937 !important;
+        -webkit-text-fill-color: #1F2937 !important;
+        font-weight: 600 !important;
+    }
+
+    /* Colores de Fondo Específicos para MODO OSCURO */
+    div[data-testid="stAlert"]:has(div[role="alert"]) {
+        background-color: #FEF3C7 !important; /* Advertencia (Amarillo) */
+        border: 1px solid #F59E0B !important;
+    }
+
+    .stAlert {
+        background-color: #FEF3C7 !important;
+        border: 1px solid #F59E0B !important;
     }
 </style>
 """
