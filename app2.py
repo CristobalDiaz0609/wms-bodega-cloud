@@ -216,6 +216,11 @@ CSS_EMPRESARIAL = """
             margin-bottom: 5px;
         }
     }
+
+    /* FORZAR COLOR DE TEXTO EN MENSAJES DE ALERTA PARA MÓVILES / MODO OSCURO */
+    div[data-testid="stAlert"] * {
+        color: #1F2937 !important;
+    }
 </style>
 """
 st.markdown(CSS_EMPRESARIAL, unsafe_allow_html=True)
