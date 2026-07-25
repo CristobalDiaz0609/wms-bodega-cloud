@@ -207,17 +207,6 @@ CSS_EMPRESARIAL = """
 st.markdown(CSS_EMPRESARIAL, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# CREDENCIALES, ROLES Y BODEGAS ASIGNADAS
-# ---------------------------------------------------------
-USUARIOS_PERMITIDOS = {
-    "cristobal": {"password": "wms2026", "rol": "superadmin", "bodega_asignada": "TODAS"},
-    "admin": {"password": "admin2026", "rol": "admin", "bodega_asignada": "TODAS"},
-    "operador1": {"password": "bodega123", "rol": "operario", "bodega_asignada": "BOD-01"},
-    "operador2": {"password": "bodega456", "rol": "operario", "bodega_asignada": "BOD-02"},
-    "operador3": {"password": "bodega789", "rol": "operario", "bodega_asignada": "BOD-03"},
-}
-
-# ---------------------------------------------------------
 # CONTROL DE SESIÓN Y AUTENTICACIÓN
 # ---------------------------------------------------------
 if "autenticado" not in st.session_state:
@@ -246,33 +235,88 @@ if "operaciones_pendientes_picking" not in st.session_state:
     st.session_state.operaciones_pendientes_picking = []
 
 
+def obtener_conexion():
+    return mysql.connector.connect(
+        host=st.secrets["mysql"]["host"],
+        port=int(st.secrets["mysql"]["port"]),
+        user=st.secrets["mysql"]["user"],
+        password=st.secrets["mysql"]["password"],
+        database=st.secrets["mysql"]["database"],
+    )
+
+def obtener_df(query, params=None):
+    conn = obtener_conexion()
+    df = pd.read_sql(query, conn, params=params)
+    conn.close()
+    return df
+
+def ejecutar_query(query, params=None):
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+    cursor.execute(query, params)
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def registrar_log_acceso(usuario, rol, bodega, accion="INICIO_SESION"):
+    try:
+        ejecutar_query(
+            "INSERT INTO log_accesos (usuario, rol, bodega, accion) VALUES (%s, %s, %s, %s)",
+            (usuario, rol, bodega, accion)
+        )
+    except Exception as e:
+        pass
+
+
 def login():
     st.sidebar.subheader("🔐 Inicio de Sesión de Personal")
     usuario_input = st.sidebar.text_input("Usuario")
     password_input = st.sidebar.text_input("Contraseña", type="password")
 
     if st.sidebar.button("Ingresar al Sistema", type="primary"):
-        if (
-            usuario_input in USUARIOS_PERMITIDOS
-            and USUARIOS_PERMITIDOS[usuario_input]["password"] == password_input
-        ):
-            st.session_state.autenticado = True
-            st.session_state.usuario_actual = usuario_input
-            st.session_state.rol_actual = USUARIOS_PERMITIDOS[usuario_input]["rol"]
-            st.session_state.bodega_usuario = USUARIOS_PERMITIDOS[usuario_input]["bodega_asignada"]
+        try:
+            # CONSULTA DINÁMICA DE USUARIOS A LA BASE DE DATOS
+            df_user = obtener_df(
+                "SELECT usuario, password, rol, bodega_asignada FROM usuarios WHERE usuario = %s AND password = %s",
+                (usuario_input, password_input)
+            )
 
-            if st.session_state.bodega_usuario != "TODAS":
-                st.session_state.bodega_activa = st.session_state.bodega_usuario
+            if not df_user.empty:
+                user_data = df_user.iloc[0]
+                st.session_state.autenticado = True
+                st.session_state.usuario_actual = user_data["usuario"]
+                st.session_state.rol_actual = user_data["rol"]
+                st.session_state.bodega_usuario = user_data["bodega_asignada"]
+
+                if st.session_state.bodega_usuario != "TODAS":
+                    st.session_state.bodega_activa = st.session_state.bodega_usuario
+                else:
+                    st.session_state.bodega_activa = "BOD-01"
+
+                # REGISTRAR LOG DE ACCESO
+                registrar_log_acceso(
+                    usuario=st.session_state.usuario_actual,
+                    rol=st.session_state.rol_actual,
+                    bodega=st.session_state.bodega_activa,
+                    accion="INICIO_SESION"
+                )
+
+                st.sidebar.success(f"¡Bienvenido, {usuario_input}!")
+                st.rerun()
             else:
-                st.session_state.bodega_activa = "BOD-01"
-
-            st.sidebar.success(f"¡Bienvenido, {usuario_input}!")
-            st.rerun()
-        else:
-            st.sidebar.error("❌ Usuario o contraseña incorrectos.")
+                st.sidebar.error("❌ Usuario o contraseña incorrectos.")
+        except Exception as e:
+            st.sidebar.error(f"❌ Error al consultar usuarios en BD. Verifica que la tabla `usuarios` exista. Error: {e}")
 
 
 def logout():
+    if st.session_state.usuario_actual:
+        registrar_log_acceso(
+            usuario=st.session_state.usuario_actual,
+            rol=st.session_state.rol_actual,
+            bodega=st.session_state.bodega_activa,
+            accion="CIERRE_SESION"
+        )
     st.session_state.autenticado = False
     st.session_state.usuario_actual = ""
     st.session_state.rol_actual = ""
@@ -292,29 +336,6 @@ if not st.session_state.autenticado:
     st.info("👈 Por favor, ingresa tus credenciales en la barra lateral para acceder al sistema.")
 
 else:
-    def obtener_conexion():
-        return mysql.connector.connect(
-            host=st.secrets["mysql"]["host"],
-            port=int(st.secrets["mysql"]["port"]),
-            user=st.secrets["mysql"]["user"],
-            password=st.secrets["mysql"]["password"],
-            database=st.secrets["mysql"]["database"],
-        )
-
-    def obtener_df(query, params=None):
-        conn = obtener_conexion()
-        df = pd.read_sql(query, conn, params=params)
-        conn.close()
-        return df
-
-    def ejecutar_query(query, params=None):
-        conn = obtener_conexion()
-        cursor = conn.cursor()
-        cursor.execute(query, params)
-        conn.commit()
-        cursor.close()
-        conn.close()
-
     # ---------------------------------------------------------
     # CALLBACK PARA CAMBIO INSTANTÁNEO DE BODEGA
     # ---------------------------------------------------------
@@ -404,7 +425,7 @@ else:
     )
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # PERMISOS DE MÓDULOS SEGÚN ROL (CARGA MASIVA EXCLUSIVO DE SUPERADMIN)
+    # PERMISOS DE MÓDULOS SEGÚN ROL
     if st.session_state.rol_actual == "superadmin":
         modulos_disponibles = [
             "MAPA 2D & ESTADO",
@@ -414,6 +435,7 @@ else:
             "DASHBOARD & KPIS",
             "HISTORIAL KÁRDEX",
             "CARGA MASIVA (EXCEL)",
+            "🛡️ AUDITORÍA & ACCESOS",
             "GENERADOR DE ETIQUETAS QR",
         ]
     elif st.session_state.rol_actual == "admin":
@@ -424,6 +446,7 @@ else:
             "PICKING / DESPACHO",
             "DASHBOARD & KPIS",
             "HISTORIAL KÁRDEX",
+            "🛡️ AUDITORÍA & ACCESOS",
             "GENERADOR DE ETIQUETAS QR",
         ]
     else:
@@ -1092,6 +1115,54 @@ else:
             st.info(f"No hay movimientos registrados en {st.session_state.bodega_activa}.")
         else:
             st.dataframe(df_kardex, use_container_width=True)
+
+    # AUDITORÍA & ACCESOS (ADMIN Y SUPERADMIN)
+    elif menu == "🛡️ AUDITORÍA & ACCESOS":
+        st.header("🛡️ Control de Conexiones y Auditoría de Sistema")
+        st.info("Monitoreo en tiempo real de últimas conexiones por usuario y registro histórico de accesos.")
+
+        st.subheader("👥 Última Conexión Registrada por Usuario")
+        query_ultimos_accesos = """
+            SELECT usuario, rol, bodega, MAX(fecha_hora) AS ultima_conexion
+            FROM log_accesos
+            WHERE accion = 'INICIO_SESION'
+            GROUP BY usuario, rol, bodega
+            ORDER BY ultima_conexion DESC;
+        """
+        try:
+            df_ultimos = obtener_df(query_ultimos_accesos)
+            if df_ultimos.empty:
+                st.warning("Aún no se han registrado inicios de sesión en la tabla de auditoría.")
+            else:
+                cols_u = st.columns(min(len(df_ultimos), 4))
+                for idx, r in df_ultimos.iterrows():
+                    with cols_u[idx % 4]:
+                        st.metric(
+                            label=f"👤 {r['usuario']} ({r['rol'].upper()})",
+                            value=f"{r['bodega']}",
+                            delta=f"🕒 {pd.to_datetime(r['ultima_conexion']).strftime('%d/%m/%Y %H:%M')}"
+                        )
+                st.markdown("---")
+                st.dataframe(df_ultimos, use_container_width=True)
+        except Exception as e:
+            st.error(f"⚠️ La tabla `log_accesos` no existe o no se puede leer. Asegúrate de haber ejecutado el SQL de creación. Error: {e}")
+
+        st.markdown("---")
+
+        st.subheader("📜 Log Histórico Completo de Accesos")
+        try:
+            df_logs = obtener_df("SELECT id_log, usuario, rol, bodega, fecha_hora, accion FROM log_accesos ORDER BY fecha_hora DESC")
+            
+            if not df_logs.empty:
+                filtro_user = st.multiselect("Filtrar por Usuario:", options=df_logs["usuario"].unique())
+                if filtro_user:
+                    df_logs = df_logs[df_logs["usuario"].isin(filtro_user)]
+
+                st.dataframe(df_logs, use_container_width=True)
+            else:
+                st.info("Sin registros en el log.")
+        except Exception as e:
+            st.error(f"Error consultando logs: {e}")
 
     # CARGA MASIVA EXCEL (EXCLUSIVO SUPERADMIN)
     elif menu == "CARGA MASIVA (EXCEL)":
