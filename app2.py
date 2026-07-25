@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.express as px
 import qrcode
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image
 
 st.set_page_config(
@@ -179,7 +180,7 @@ CSS_EMPRESARIAL = """
 
     /* Tarjetas de Métricas (KPIs) */
     div[data-testid="stMetric"] {
-        background-color: #FFFFFF !important;
+        background-color: #FFFFFF;
         padding: 15px;
         border-radius: 10px;
         box-shadow: 0 2px 8px rgba(0,0,0,0.05);
@@ -197,59 +198,49 @@ CSS_EMPRESARIAL = """
 
     /* Tablas de Datos */
     .stDataFrame {
-        background-color: #FFFFFF !important;
+        background-color: #FFFFFF;
         border-radius: 8px;
         padding: 5px;
         box-shadow: 0 2px 6px rgba(0,0,0,0.04);
     }
 
-    /* OPTIMIZACIÓN RESPONSIVA PARA PANTALLAS DE CELULAR */
-    @media (max-width: 768px) {
-        .block-container {
-            padding-left: 0.5rem !important;
-            padding-right: 0.5rem !important;
-            padding-top: 1rem !important;
-        }
-        .stButton>button {
-            width: 100%;
-            height: 3em;
-            margin-bottom: 5px;
-        }
-    }
-
-    /* ========================================================= */
-    /* FIX COMPLETO PARA MODO OSCURO (DARK MODE EN MOVILES Y PC) */
-    /* ========================================================= */
-    
-    /* Contenedor Global de Alertas */
-    div[data-testid="stAlert"] {
-        border-radius: 8px !important;
-        padding: 12px 16px !important;
-    }
-
-    /* Texto dentro de Alertas (Forzar siempre color oscuro visible) */
-    div[data-testid="stAlert"] *,
-    div[data-testid="stAlert"] p,
-    div[data-testid="stAlert"] span,
-    div[data-testid="stAlert"] div {
-        color: #1F2937 !important;
-        -webkit-text-fill-color: #1F2937 !important;
-        font-weight: 600 !important;
-    }
-
-    /* Colores de Fondo Específicos para MODO OSCURO */
-    div[data-testid="stAlert"]:has(div[role="alert"]) {
-        background-color: #FEF3C7 !important; /* Advertencia (Amarillo) */
-        border: 1px solid #F59E0B !important;
-    }
-
-    .stAlert {
-        background-color: #FEF3C7 !important;
-        border: 1px solid #F59E0B !important;
+    /* REGLAS EXTRA DE SEGURIDAD CSS */
+    footer, header, #MainMenu, [data-testid="stHeader"], [data-testid="stToolbar"], .stDeployButton {
+        display: none !important;
+        visibility: hidden !important;
     }
 </style>
 """
 st.markdown(CSS_EMPRESARIAL, unsafe_allow_html=True)
+
+# SCRIPT JS DE OCULTACIÓN FORZADA EN MÓVILES Y PC
+components.html(
+    """
+    <script>
+        function removeBadges() {
+            const parentDoc = window.parent.document;
+            const selectors = [
+                'footer', 
+                'header', 
+                '#MainMenu', 
+                '[data-testid="stHeader"]', 
+                '[data-testid="stToolbar"]', 
+                '[data-testid="stStatusWidget"]',
+                '.stDeployButton',
+                'div[class*="viewerBadge"]',
+                'div[class*="stAppBadge"]'
+            ];
+            selectors.forEach(sel => {
+                const els = parentDoc.querySelectorAll(sel);
+                els.forEach(el => { el.style.display = 'none'; el.style.visibility = 'hidden'; });
+            });
+        }
+        setInterval(removeBadges, 500);
+    </script>
+    """,
+    height=0,
+    width=0,
+)
 
 # ---------------------------------------------------------
 # FUNCIONES AUXILIARES Y CONEXIÓN A BASE DE DATOS
