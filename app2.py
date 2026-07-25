@@ -202,6 +202,20 @@ CSS_EMPRESARIAL = """
         padding: 5px;
         box-shadow: 0 2px 6px rgba(0,0,0,0.04);
     }
+
+    /* OPTIMIZACIÓN RESPONSIVA PARA PANTALLAS DE CELULAR */
+    @media (max-width: 768px) {
+        .block-container {
+            padding-left: 0.5rem !important;
+            padding-right: 0.5rem !important;
+            padding-top: 1rem !important;
+        }
+        .stButton>button {
+            width: 100%;
+            height: 3em;
+            margin-bottom: 5px;
+        }
+    }
 </style>
 """
 st.markdown(CSS_EMPRESARIAL, unsafe_allow_html=True)
