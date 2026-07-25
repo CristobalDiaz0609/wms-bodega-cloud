@@ -32,7 +32,7 @@ CSS_EMPRESARIAL = """
     }
     section[data-testid="stSidebar"] h1, 
     section[data-testid="stSidebar"] h2, 
-    section[data-testid="stSidebar"] h3, 
+    section[data-testid="sectionSidebar"] h3, 
     section[data-testid="stSidebar"] p, 
     section[data-testid="stSidebar"] label {
         color: #FFFFFF !important;
@@ -203,16 +203,27 @@ CSS_EMPRESARIAL = """
         box-shadow: 0 2px 6px rgba(0,0,0,0.04);
     }
 
-    /* OCULTAR PIE DE PÁGINA E INSIGNIA FLOTANTE DE STREAMLIT */
-    footer {
-        visibility: hidden !important;
-    }
-    .viewerBadge_container__1s5nd, 
-    [data-testid="stStatusWidget"],
-    .stAppBadge,
-    div[class*="viewerBadge"] {
+    /* ========================================================= */
+    /* ELIMINAR TOTALMENTE INSIGNIAS Y BOTONES FLOTANTES DE ABAJO */
+    /* ========================================================= */
+    footer, 
+    #MainMenu, 
+    header, 
+    .stDeployButton, 
+    div[data-testid="stStatusWidget"],
+    div[data-testid="stDecoration"],
+    div[data-testid="stToolbar"],
+    div[class*="viewerBadge"],
+    div[class*="stAppBadge"],
+    .viewerBadge_container__1s5nd,
+    iframe[src*="github"],
+    a[href*="streamlit.io"] {
         display: none !important;
         visibility: hidden !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+        height: 0 !important;
+        width: 0 !important;
     }
 </style>
 """
