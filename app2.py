@@ -217,9 +217,14 @@ CSS_EMPRESARIAL = """
         }
     }
 
-    /* FORZAR COLOR DE TEXTO EN MENSAJES DE ALERTA PARA MÓVILES / MODO OSCURO */
-    div[data-testid="stAlert"] * {
-        color: #1F2937 !important;
+    /* FIX DEFINITIVO MODO OSCURO / MÓVIL EN MENSADERÍA DE ALERTAS */
+    div[data-testid="stAlert"],
+    div[data-testid="stAlert"] *,
+    div[data-testid="stAlert"] p,
+    div[data-testid="stAlert"] span,
+    .stAlert p {
+        color: #111827 !important;
+        -webkit-text-fill-color: #111827 !important;
     }
 </style>
 """
