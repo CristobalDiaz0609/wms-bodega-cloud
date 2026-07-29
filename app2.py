@@ -323,7 +323,7 @@ def ejecutar_job_forecasting(id_bodega, dias_historial=60, dias_proyeccion=30, l
         # Punto de reorden = (Demanda diaria × Lead time) + Stock de seguridad (20%)
         punto_reorden = int(round((prom_diario * lead_time_dias) * 1.2))
 
-        # Clasificación según la condición solicitada: stock_actual vs. punto_reorden_sugerido
+        # Clasificación según la condición: stock_actual vs. punto_reorden_sugerido
         if stock_act <= punto_reorden and punto_reorden > 0:
             estado_stock = "CRÍTICO (REABASTECER)"
         elif stock_act <= int(punto_reorden * 1.5) and punto_reorden > 0:
@@ -525,8 +525,9 @@ else:
                     elif op["tipo"] == "UPDATE":
                         cursor.execute("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (op["nueva_cantidad"], op["id_inventario"]))
 
+                    # REGISTRO EXPLÍCITO COMO 'VENTA' EN EL HISTORIAL / KÁRDEX
                     cursor.execute(
-                        "INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad, id_bodega) VALUES ('DESPACHO', %s, %s, %s, %s)",
+                        "INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad, id_bodega) VALUES ('VENTA', %s, %s, %s, %s)",
                         (op["sku"], op["id_ubicacion"], op["cantidad"], st.session_state.bodega_activa)
                     )
 
