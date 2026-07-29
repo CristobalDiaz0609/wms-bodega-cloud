@@ -1428,7 +1428,7 @@ else:
     st.markdown("---")
 
     # =========================================================================
-    # GRÁFICO DE LÍNEAS GERENCIAL: HISTÓRICO SEMANAL LIMPIO + PROYECCIÓN PLANA (60 DÍAS)
+    # GRÁFICO DE LÍNEAS GERENCIAL: HISTÓRICO SEMANAL (YEARWEEK) + PROYECCIÓN PLANA (60 DÍAS)
     # =========================================================================
     st.subheader(
         "📈 Tendencia Semanal de Ventas y Proyección Plana (Próximos 60 Días)"
@@ -1464,10 +1464,10 @@ else:
         if sku_chart_sel:
           sku_clean_chart = sku_chart_sel.split(" - ")[0]
 
-          # 1. HISTÓRICO REAL AGREGADO ESTRICTAMENTE POR SEMANA (YEARWEEK CON GROUP BY CORREGIDO)
+          # 1. HISTÓRICO REAL AGRUPADO POR SEMANA NUMÉRICA (YEARWEEK) PARA EVITAR ERROR SQL
           query_historico = f"""
                         SELECT 
-                            STR_TO_DATE(CONCAT(YEARWEEK(fecha_hora, 1), ' Monday'), '%X%V %W') AS fecha_semana,
+                            YEARWEEK(fecha_hora, 1) AS yw,
                             SUM(cantidad) AS unidades
                         FROM {NOMBRE_BD}.historial_movimientos
                         WHERE (tipo_movimiento = 'VENTA' OR tipo_movimiento = 'DESPACHO')
@@ -1475,12 +1475,20 @@ else:
                           AND sku = %s
                           AND fecha_hora >= CURRENT_DATE() - INTERVAL 90 DAY
                         GROUP BY YEARWEEK(fecha_hora, 1)
-                        ORDER BY fecha_semana ASC;
+                        ORDER BY yw ASC;
                     """
           df_hist = obtener_df(
               query_historico,
               (st.session_state.bodega_activa, sku_clean_chart),
           )
+
+          # Convertir YEARWEEK (ej. 202625) a fecha real en Pandas limpiamente
+          if not df_hist.empty:
+            df_hist["fecha_semana"] = pd.to_datetime(
+                df_hist["yw"].astype(str) + "1", format="%Y%V%u"
+            )
+          else:
+            df_hist["fecha_semana"] = pd.Series(dtype="datetime64[ns]")
 
           # 2. OBTENER PROMEDIO DIARIO Y PUNTO DE REORDEN ESTRICTAMENTE DE LA BODEGA ACTIVA
           df_fc_val = obtener_df(
@@ -1506,7 +1514,6 @@ else:
           fig = go.Figure()
 
           if not df_hist.empty:
-            df_hist["fecha_semana"] = pd.to_datetime(df_hist["fecha_semana"])
             # Línea Sólida: Histórico Real Semanal Ordenado
             fig.add_trace(go.Scatter(
                 x=df_hist["fecha_semana"],
@@ -1577,7 +1584,7 @@ else:
                   f"Tendencia Semanal Limpia y Proyección Plana a 2 Meses - SKU:"
                   f" {sku_clean_chart}"
               ),
-              xaxis_title="Eje Temporal (Agrupado por Semana - Lunes a Domingo)",
+              xaxis_title="Eje Temporal (Agrupado por Semana)",
               yaxis_title="Unidades Vendidas por Semana",
               height=450,
               paper_bgcolor="rgba(0,0,0,0)",
