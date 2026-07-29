@@ -278,6 +278,82 @@ def registrar_log_acceso(usuario, rol, bodega, accion="INICIO_SESION"):
         pass
 
 # ---------------------------------------------------------
+# FUNCIÓN DEL MOTOR DE FORECASTING DE DEMANDA (JOB HEAVY)
+# ---------------------------------------------------------
+def ejecutar_job_forecasting(id_bodega, dias_historial=60, dias_proyeccion=30, lead_time_dias=7):
+    """
+    Calcula el promedio diario de consumo por SKU en los últimos X días,
+    proyecta la demanda para los próximos 30 días y calcula el punto de reorden.
+    Escribe el resultado en la tabla 'forecast_demanda'.
+    """
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+
+    # 1. Obtener consumo acumulado histórico de cada SKU en la bodega activa
+    query_consumo = """
+        SELECT sku, COALESCE(SUM(cantidad), 0) AS total_despachado
+        FROM historial_movimientos
+        WHERE (tipo_movimiento = 'VENTA' OR tipo_movimiento = 'DESPACHO')
+          AND id_bodega = %s
+          AND fecha_hora >= CURRENT_DATE() - INTERVAL %s DAY
+        GROUP BY sku;
+    """
+    df_consumo = pd.read_sql(query_consumo, conn, params=(id_bodega, dias_historial))
+    dict_consumo = dict(zip(df_consumo["sku"], df_consumo["total_despachado"])) if not df_consumo.empty else {}
+
+    # 2. Obtener lista completa de productos registrados
+    df_prods = pd.read_sql("SELECT sku FROM productos", conn)
+
+    # 3. Obtener stock actual por SKU
+    query_stock = """
+        SELECT i.sku, COALESCE(SUM(i.cantidad), 0) AS stock_actual
+        FROM inventario i
+        JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion
+        WHERE u.id_bodega = %s
+        GROUP BY i.sku;
+    """
+    df_stock = pd.read_sql(query_stock, conn, params=(id_bodega,))
+    dict_stock = dict(zip(df_stock["sku"], df_stock["stock_actual"])) if not df_stock.empty else {}
+
+    # 4. Recorrer SKUs y calcular métricas de forecasting
+    procesados = 0
+    for _, row in df_prods.iterrows():
+        sku = row["sku"]
+        total_desp = dict_consumo.get(sku, 0)
+        stock_act = dict_stock.get(sku, 0)
+
+        prom_diario = round(total_desp / float(dias_historial), 2)
+        prediccion_30d = int(round(prom_diario * dias_proyeccion))
+        
+        # Punto de reorden = Demanda durante tiempo de entrega + Stock de seguridad (20%)
+        punto_reorden = int(round((prom_diario * lead_time_dias) * 1.2))
+
+        if stock_act <= punto_reorden and punto_reorden > 0:
+            estado_stock = "⚠️ CRÍTICO (REABASTECER)"
+        elif stock_act <= punto_reorden * 1.5 and punto_reorden > 0:
+            estado_stock = "⚡ ADVERTENCIA"
+        else:
+            estado_stock = "✅ NORMAL"
+
+        cursor.execute("""
+            INSERT INTO forecast_demanda 
+            (sku, id_bodega, fecha_calculo, prediccion_prox_30d, promedio_diario, punto_reorden_sugerido, estado_stock)
+            VALUES (%s, %s, NOW(), %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE 
+                fecha_calculo = NOW(),
+                prediccion_prox_30d = VALUES(prediccion_prox_30d),
+                promedio_diario = VALUES(promedio_diario),
+                punto_reorden_sugerido = VALUES(punto_reorden_sugerido),
+                estado_stock = VALUES(estado_stock);
+        """, (sku, id_bodega, prediccion_30d, prom_diario, punto_reorden, estado_stock))
+        procesados += 1
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return procesados
+
+# ---------------------------------------------------------
 # CONTROL DE SESIÓN Y PERSISTENCIA (AUTO-LOGIN VIA URL)
 # ---------------------------------------------------------
 if "autenticado" not in st.session_state:
@@ -444,9 +520,7 @@ else:
         st.session_state.distancia_total_persistente = None
         st.session_state.operaciones_pendientes_picking = []
 
-    # ---------------------------------------------------------
-    # CONFIRMAR PICKING ACTUALIZADO (REGISTRA VENTA Y NO BORRA)
-    # ---------------------------------------------------------
+    # CONFIRMAR PICKING
     def confirmar_picking_callback():
         if st.session_state.operaciones_pendientes_picking:
             try:
@@ -454,16 +528,14 @@ else:
                 cursor = conn.cursor()
 
                 for op in st.session_state.operaciones_pendientes_picking:
-                    # En lugar de DELETE, actualizamos la cantidad a 0 y liberamos la casilla en el mapa
                     if op["tipo"] == "DELETE":
                         cursor.execute("UPDATE inventario SET cantidad = 0 WHERE id_inventario = %s", (op["id_inventario"],))
                         cursor.execute("UPDATE ubicaciones SET estado = 'Libre' WHERE id_ubicacion = %s AND id_bodega = %s", (op["id_ubicacion"], st.session_state.bodega_activa))
                     elif op["tipo"] == "UPDATE":
                         cursor.execute("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (op["nueva_cantidad"], op["id_inventario"]))
 
-                    # Se registra en el historial como 'VENTA'
                     cursor.execute(
-                        "INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad, id_bodega) VALUES ('VENTA', %s, %s, %s, %s)",
+                        "INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad, id_bodega) VALUES ('DESPACHO', %s, %s, %s, %s)",
                         (op["sku"], op["id_ubicacion"], op["cantidad"], st.session_state.bodega_activa)
                     )
 
@@ -474,7 +546,7 @@ else:
                 st.session_state.hoja_ruta_persistente = None
                 st.session_state.distancia_total_persistente = None
                 st.session_state.operaciones_pendientes_picking = []
-                st.session_state.mensaje_exito_picking = "🎉 ¡Venta/Picking confirmado con éxito! Registrado como VENTA en la base de datos."
+                st.session_state.mensaje_exito_picking = "🎉 ¡Venta/Picking confirmado con éxito! Registrado en la base de datos."
             except Exception as e:
                 st.session_state.mensaje_exito_picking = f"❌ Error: {e}"
 
@@ -935,6 +1007,44 @@ else:
     elif menu == "DASHBOARD & KPIS":
         st.header(f"Analítica de Operación y Reportes - {st.session_state.bodega_activa}")
 
+        # BOTÓN PARA EJECUTAR EL RECALCULO DE FORECASTING
+        col_dash_title, col_dash_btn = st.columns([3, 1])
+        with col_dash_btn:
+            if st.button("🔮 Recalcular Forecasting", type="primary", use_container_width=True):
+                with st.spinner("Procesando proyección de demanda..."):
+                    try:
+                        cant_skus = ejecutar_job_forecasting(st.session_state.bodega_activa)
+                        st.success(f"Proyección calculada para {cant_skus} SKUs.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Asegúrate de haber creado la tabla `forecast_demanda`. Error: {e}")
+
+        # BLOQUE 0: ALERTAS DE FORECASTING Y REABASTECIMIENTO
+        try:
+            df_forecast = obtener_df("""
+                SELECT f.sku, p.nombre, f.promedio_diario, f.prediccion_prox_30d, f.punto_reorden_sugerido, f.estado_stock, f.fecha_calculo,
+                       COALESCE(SUM(i.cantidad), 0) AS stock_actual
+                FROM forecast_demanda f
+                JOIN productos p ON f.sku = p.sku
+                LEFT JOIN inventario i ON f.sku = i.sku
+                LEFT JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion AND u.id_bodega = f.id_bodega
+                WHERE f.id_bodega = %s
+                GROUP BY f.sku, p.nombre, f.promedio_diario, f.prediccion_prox_30d, f.punto_reorden_sugerido, f.estado_stock, f.fecha_calculo
+                ORDER BY f.punto_reorden_sugerido DESC;
+            """, (st.session_state.bodega_activa,))
+
+            if not df_forecast.empty:
+                df_criticos = df_forecast[df_forecast["estado_stock"] == "⚠️ CRÍTICO (REABASTECER)"]
+                if not df_criticos.empty:
+                    st.error(f"🚨 **ALERTAS DE REABASTECIMIENTO:** Se detectaron {len(df_criticos)} SKU(s) por debajo de su punto de reorden en {st.session_state.bodega_activa}.")
+                    st.dataframe(df_criticos[["sku", "nombre", "stock_actual", "punto_reorden_sugerido", "prediccion_prox_30d", "estado_stock"]], use_container_width=True)
+                else:
+                    st.success("✅ **SISTEMA DE DEMANDA:** Todos los SKUs cuentan con stock suficiente según el forecasting.")
+        except Exception:
+            st.info("ℹ️ Haz clic en **🔮 Recalcular Forecasting** para generar las predicciones de demanda iniciales.")
+
+        st.markdown("---")
+
         # BLOQUE 1: MÉTRICAS PRINCIPALES DE INVENTARIO
         st.subheader("📌 Métricas Principales de Inventario")
 
@@ -1149,14 +1259,17 @@ else:
 
         st.markdown("---")
 
-        # BLOQUE 6: EXPORTAR REPORTE EXCEL COMPLETO
+        # BLOQUE 6: EXPORTAR REPORTE EXCEL COMPLETO CON FORECASTING
         df_inv_exp = obtener_df("SELECT i.*, u.id_bodega FROM inventario i JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion WHERE u.id_bodega = %s", (st.session_state.bodega_activa,))
         df_kardex_exp = obtener_df("SELECT * FROM historial_movimientos WHERE id_bodega = %s ORDER BY fecha_hora DESC", (st.session_state.bodega_activa,))
+        df_forecast_exp = obtener_df("SELECT * FROM forecast_demanda WHERE id_bodega = %s", (st.session_state.bodega_activa,))
 
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             df_inv_exp.to_excel(writer, sheet_name="Inventario_Actual", index=False)
             df_kardex_exp.to_excel(writer, sheet_name="Kardex_Movimientos", index=False)
+            if not df_forecast_exp.empty:
+                df_forecast_exp.to_excel(writer, sheet_name="Forecasting_Demanda", index=False)
             if not df_inactivos.empty:
                 df_inactivos.to_excel(writer, sheet_name="Stock_Inactivo", index=False)
 
