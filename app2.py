@@ -245,94 +245,121 @@ components.html(
 # ---------------------------------------------------------
 # FUNCIONES AUXILIARES Y CONEXIÓN A BASE DE DATOS
 # ---------------------------------------------------------
+NOMBRE_BD = "wms_bodega"
+
+
 def obtener_conexion():
-    return mysql.connector.connect(
-        host=st.secrets["mysql"]["host"],
-        port=int(st.secrets["mysql"]["port"]),
-        user=st.secrets["mysql"]["user"],
-        password=st.secrets["mysql"]["password"],
-        database=st.secrets["mysql"]["database"],
-    )
+  db_name = st.secrets["mysql"].get("database", NOMBRE_BD)
+  return mysql.connector.connect(
+      host=st.secrets["mysql"]["host"],
+      port=int(st.secrets["mysql"]["port"]),
+      user=st.secrets["mysql"]["user"],
+      password=st.secrets["mysql"]["password"],
+      database=db_name,
+  )
+
 
 def obtener_df(query, params=None):
-    conn = obtener_conexion()
-    df = pd.read_sql(query, conn, params=params)
-    conn.close()
-    return df
+  conn = obtener_conexion()
+  df = pd.read_sql(query, conn, params=params)
+  conn.close()
+  return df
+
 
 def ejecutar_query(query, params=None):
-    conn = obtener_conexion()
-    cursor = conn.cursor()
-    cursor.execute(query, params)
-    conn.commit()
-    cursor.close()
-    conn.close()
+  conn = obtener_conexion()
+  cursor = conn.cursor()
+  cursor.execute(query, params)
+  conn.commit()
+  cursor.close()
+  conn.close()
+
 
 def registrar_log_acceso(usuario, rol, bodega, accion="INICIO_SESION"):
-    try:
-        ejecutar_query(
-            "INSERT INTO log_accesos (usuario, rol, bodega, accion) VALUES (%s, %s, %s, %s)",
-            (usuario, rol, bodega, accion)
-        )
-    except Exception:
-        pass
+  try:
+    ejecutar_query(
+        f"INSERT INTO {NOMBRE_BD}.log_accesos (usuario, rol, bodega, accion)"
+        " VALUES (%s, %s, %s, %s)",
+        (usuario, rol, bodega, accion),
+    )
+  except Exception:
+    pass
+
 
 # ---------------------------------------------------------
-# FUNCIÓN DEL MOTOR DE FORECASTING (REVISADO Y CORREGIDO)
+# FUNCIÓN DEL MOTOR DE FORECASTING (max(1, ...) APLICADO)
 # ---------------------------------------------------------
-def ejecutar_job_forecasting(id_bodega, dias_historial=60, dias_proyeccion=30, lead_time_dias=7):
-    conn = obtener_conexion()
-    cursor = conn.cursor()
+def ejecutar_job_forecasting(
+    id_bodega, dias_historial=60, dias_proyeccion=30, lead_time_dias=7
+):
+  conn = obtener_conexion()
+  cursor = conn.cursor()
 
-    # 1. Consumo histórico
-    query_consumo = """
+  # 1. Consumo histórico
+  query_consumo = f"""
         SELECT sku, COALESCE(SUM(cantidad), 0) AS total_despachado
-        FROM historial_movimientos
+        FROM {NOMBRE_BD}.historial_movimientos
         WHERE (tipo_movimiento = 'VENTA' OR tipo_movimiento = 'DESPACHO')
           AND id_bodega = %s
           AND fecha_hora >= CURRENT_DATE() - INTERVAL %s DAY
         GROUP BY sku;
     """
-    df_consumo = pd.read_sql(query_consumo, conn, params=(id_bodega, dias_historial))
-    dict_consumo = dict(zip(df_consumo["sku"], df_consumo["total_despachado"])) if not df_consumo.empty else {}
+  df_consumo = pd.read_sql(
+      query_consumo, conn, params=(id_bodega, dias_historial)
+  )
+  dict_consumo = (
+      dict(zip(df_consumo["sku"], df_consumo["total_despachado"]))
+      if not df_consumo.empty
+      else {}
+  )
 
-    # 2. Catálogo de productos
-    df_prods = pd.read_sql("SELECT sku FROM productos", conn)
+  # 2. Catálogo de productos
+  df_prods = pd.read_sql(f"SELECT sku FROM {NOMBRE_BD}.productos", conn)
 
-    # 3. Stock actual real agrupado por bodega
-    query_stock = """
+  # 3. Stock actual real agrupado por bodega
+  query_stock = f"""
         SELECT i.sku, COALESCE(SUM(i.cantidad), 0) AS stock_actual
-        FROM inventario i
-        JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion
+        FROM {NOMBRE_BD}.inventario i
+        JOIN {NOMBRE_BD}.ubicaciones u ON i.id_ubicacion = u.id_ubicacion
         WHERE u.id_bodega = %s
         GROUP BY i.sku;
     """
-    df_stock = pd.read_sql(query_stock, conn, params=(id_bodega,))
-    dict_stock = dict(zip(df_stock["sku"], df_stock["stock_actual"])) if not df_stock.empty else {}
+  df_stock = pd.read_sql(query_stock, conn, params=(id_bodega,))
+  dict_stock = (
+      dict(zip(df_stock["sku"], df_stock["stock_actual"]))
+      if not df_stock.empty
+      else {}
+  )
 
-    procesados = 0
-    for _, row in df_prods.iterrows():
-        sku = row["sku"]
-        total_desp = dict_consumo.get(sku, 0)
-        stock_act = dict_stock.get(sku, 0)
+  procesados = 0
+  for _, row in df_prods.iterrows():
+    sku = row["sku"]
+    total_desp = dict_consumo.get(sku, 0)
+    stock_act = dict_stock.get(sku, 0)
 
-        # Cálculo de promedio diario
-        prom_diario = round(total_desp / float(dias_historial), 2)
-        prediccion_30d = int(round(prom_diario * dias_proyeccion))
-        
-        # Punto de reorden = (Demanda diaria × Lead time) + Stock de seguridad (20%)
-        punto_reorden = int(round((prom_diario * lead_time_dias) * 1.2))
+    # Promedio diario y proyección a 30 días
+    prom_diario = round(total_desp / float(dias_historial), 2)
+    prediccion_30d = int(round(prom_diario * dias_proyeccion))
 
-        # Clasificación según la condición: stock_actual vs. punto_reorden_sugerido
-        if stock_act <= punto_reorden and punto_reorden > 0:
-            estado_stock = "CRÍTICO (REABASTECER)"
-        elif stock_act <= int(punto_reorden * 1.5) and punto_reorden > 0:
-            estado_stock = "BAJO"
-        else:
-            estado_stock = "OK"
+    # CÁLCULO DEL PUNTO DE REORDEN
+    punto_reorden_calc = int(round((prom_diario * lead_time_dias) * 1.2))
 
-        cursor.execute("""
-            INSERT INTO forecast_demanda 
+    # FORZAMOS QUE EL PUNTO DE REORDEN SEA MÍNIMO 1 (MÁXIMO ENTRE EL CÁLCULO Y 1)
+    punto_reorden = max(1, punto_reorden_calc)
+
+    # Clasificación de estado según el punto_reorden (mínimo 1)
+    if stock_act == 0:
+      estado_stock = "🚨 QUIEBRE DE STOCK (0 UNID)"
+    elif stock_act <= punto_reorden:
+      estado_stock = "⚠️ CRÍTICO (REABASTECER)"
+    elif stock_act <= int(punto_reorden * 1.5):
+      estado_stock = "⚡ BAJO"
+    else:
+      estado_stock = "OK"
+
+    cursor.execute(
+        f"""
+            INSERT INTO {NOMBRE_BD}.forecast_demanda 
             (sku, id_bodega, fecha_calculo, prediccion_prox_30d, promedio_diario, punto_reorden_sugerido, estado_stock)
             VALUES (%s, %s, NOW(), %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE 
@@ -341,399 +368,523 @@ def ejecutar_job_forecasting(id_bodega, dias_historial=60, dias_proyeccion=30, l
                 promedio_diario = VALUES(promedio_diario),
                 punto_reorden_sugerido = VALUES(punto_reorden_sugerido),
                 estado_stock = VALUES(estado_stock);
-        """, (sku, id_bodega, prediccion_30d, prom_diario, punto_reorden, estado_stock))
-        procesados += 1
+        """,
+        (
+            sku,
+            id_bodega,
+            prediccion_30d,
+            prom_diario,
+            punto_reorden,
+            estado_stock,
+        ),
+    )
+    procesados += 1
 
-    conn.commit()
-    cursor.close()
-    conn.close()
-    return procesados
+  conn.commit()
+  cursor.close()
+  conn.close()
+  return procesados
+
 
 # ---------------------------------------------------------
 # CONTROL DE SESIÓN Y PERSISTENCIA (AUTO-LOGIN VIA URL)
 # ---------------------------------------------------------
 if "autenticado" not in st.session_state:
-    st.session_state.autenticado = False
+  st.session_state.autenticado = False
 if "usuario_actual" not in st.session_state:
-    st.session_state.usuario_actual = ""
+  st.session_state.usuario_actual = ""
 if "rol_actual" not in st.session_state:
-    st.session_state.rol_actual = ""
+  st.session_state.rol_actual = ""
 if "bodega_usuario" not in st.session_state:
-    st.session_state.bodega_usuario = ""
+  st.session_state.bodega_usuario = ""
 if "bodega_activa" not in st.session_state:
-    st.session_state.bodega_activa = "BOD-01"
+  st.session_state.bodega_activa = "BOD-01"
 
 if "mensaje_exito_ingreso" not in st.session_state:
-    st.session_state.mensaje_exito_ingreso = None
+  st.session_state.mensaje_exito_ingreso = None
 if "mensaje_exito_reubicacion" not in st.session_state:
-    st.session_state.mensaje_exito_reubicacion = None
+  st.session_state.mensaje_exito_reubicacion = None
 if "mensaje_exito_picking" not in st.session_state:
-    st.session_state.mensaje_exito_picking = None
+  st.session_state.mensaje_exito_picking = None
 
 if "hoja_ruta_persistente" not in st.session_state:
-    st.session_state.hoja_ruta_persistente = None
+  st.session_state.hoja_ruta_persistente = None
 if "distancia_total_persistente" not in st.session_state:
-    st.session_state.distancia_total_persistente = None
+  st.session_state.distancia_total_persistente = None
 if "operaciones_pendientes_picking" not in st.session_state:
-    st.session_state.operaciones_pendientes_picking = []
+  st.session_state.operaciones_pendientes_picking = []
 
 # AUTO-LOGIN VIA URL
 if not st.session_state.autenticado and "user" in st.query_params:
-    user_url = st.query_params["user"]
-    try:
-        df_user_url = obtener_df(
-            "SELECT usuario, rol, bodega_asignada FROM usuarios WHERE usuario = %s",
-            (user_url,)
-        )
-        if not df_user_url.empty:
-            u_data = df_user_url.iloc[0]
-            st.session_state.autenticado = True
-            st.session_state.usuario_actual = u_data["usuario"]
-            st.session_state.rol_actual = u_data["rol"]
-            st.session_state.bodega_usuario = u_data["bodega_asignada"]
-            st.session_state.bodega_activa = "BOD-01" if u_data["bodega_asignada"] == "TODAS" else u_data["bodega_asignada"]
-    except Exception:
-        pass
+  user_url = st.query_params["user"]
+  try:
+    df_user_url = obtener_df(
+        f"SELECT usuario, rol, bodega_asignada FROM {NOMBRE_BD}.usuarios WHERE"
+        " usuario = %s",
+        (user_url,),
+    )
+    if not df_user_url.empty:
+      u_data = df_user_url.iloc[0]
+      st.session_state.autenticado = True
+      st.session_state.usuario_actual = u_data["usuario"]
+      st.session_state.rol_actual = u_data["rol"]
+      st.session_state.bodega_usuario = u_data["bodega_asignada"]
+      st.session_state.bodega_activa = (
+          "BOD-01"
+          if u_data["bodega_asignada"] == "TODAS"
+          else u_data["bodega_asignada"]
+      )
+  except Exception:
+    pass
 
 
 def login():
-    st.sidebar.subheader("🔐 Inicio de Sesión de Personal")
-    usuario_input = st.sidebar.text_input("Usuario")
-    password_input = st.sidebar.text_input("Contraseña", type="password")
+  st.sidebar.subheader("🔐 Inicio de Sesión de Personal")
+  usuario_input = st.sidebar.text_input("Usuario")
+  password_input = st.sidebar.text_input("Contraseña", type="password")
 
-    if st.sidebar.button("Ingresar al Sistema", type="primary"):
-        try:
-            df_user = obtener_df(
-                "SELECT usuario, password, rol, bodega_asignada FROM usuarios WHERE usuario = %s AND password = %s",
-                (usuario_input, password_input)
-            )
+  if st.sidebar.button("Ingresar al Sistema", type="primary"):
+    try:
+      df_user = obtener_df(
+          f"SELECT usuario, password, rol, bodega_asignada FROM"
+          f" {NOMBRE_BD}.usuarios WHERE usuario = %s AND password = %s",
+          (usuario_input, password_input),
+      )
 
-            if not df_user.empty:
-                user_data = df_user.iloc[0]
-                st.session_state.autenticado = True
-                st.session_state.usuario_actual = user_data["usuario"]
-                st.session_state.rol_actual = user_data["rol"]
-                st.session_state.bodega_usuario = user_data["bodega_asignada"]
+      if not df_user.empty:
+        user_data = df_user.iloc[0]
+        st.session_state.autenticado = True
+        st.session_state.usuario_actual = user_data["usuario"]
+        st.session_state.rol_actual = user_data["rol"]
+        st.session_state.bodega_usuario = user_data["bodega_asignada"]
 
-                if st.session_state.bodega_usuario != "TODAS":
-                    st.session_state.bodega_activa = st.session_state.bodega_usuario
-                else:
-                    st.session_state.bodega_activa = "BOD-01"
+        if st.session_state.bodega_usuario != "TODAS":
+          st.session_state.bodega_activa = st.session_state.bodega_usuario
+        else:
+          st.session_state.bodega_activa = "BOD-01"
 
-                st.query_params["user"] = user_data["usuario"]
+        st.query_params["user"] = user_data["usuario"]
 
-                registrar_log_acceso(
-                    usuario=st.session_state.usuario_actual,
-                    rol=st.session_state.rol_actual,
-                    bodega=st.session_state.bodega_activa,
-                    accion="INICIO_SESION"
-                )
-
-                st.sidebar.success(f"¡Bienvenido, {usuario_input}!")
-                st.rerun()
-            else:
-                st.sidebar.error("❌ Usuario o contraseña incorrectos.")
-        except Exception as e:
-            st.sidebar.error(f"❌ Error al consultar BD. Error: {e}")
-
-
-def logout():
-    if st.session_state.usuario_actual:
         registrar_log_acceso(
             usuario=st.session_state.usuario_actual,
             rol=st.session_state.rol_actual,
             bodega=st.session_state.bodega_activa,
-            accion="CIERRE_SESION"
+            accion="INICIO_SESION",
         )
-    st.query_params.clear()
-    st.session_state.autenticado = False
-    st.session_state.usuario_actual = ""
-    st.session_state.rol_actual = ""
-    st.session_state.bodega_usuario = ""
-    st.session_state.hoja_ruta_persistente = None
-    st.session_state.distancia_total_persistente = None
-    st.session_state.operaciones_pendientes_picking = []
-    st.session_state.mensaje_exito_ingreso = None
-    st.session_state.mensaje_exito_reubicacion = None
-    st.session_state.mensaje_exito_picking = None
-    st.rerun()
+
+        st.sidebar.success(f"¡Bienvenido, {usuario_input}!")
+        st.rerun()
+      else:
+        st.sidebar.error("❌ Usuario o contraseña incorrectos.")
+    except Exception as e:
+      st.sidebar.error(f"❌ Error al consultar BD. Error: {e}")
+
+
+def logout():
+  if st.session_state.usuario_actual:
+    registrar_log_acceso(
+        usuario=st.session_state.usuario_actual,
+        rol=st.session_state.rol_actual,
+        bodega=st.session_state.bodega_activa,
+        accion="CIERRE_SESION",
+    )
+  st.query_params.clear()
+  st.session_state.autenticado = False
+  st.session_state.usuario_actual = ""
+  st.session_state.rol_actual = ""
+  st.session_state.bodega_usuario = ""
+  st.session_state.hoja_ruta_persistente = None
+  st.session_state.distancia_total_persistente = None
+  st.session_state.operaciones_pendientes_picking = []
+  st.session_state.mensaje_exito_ingreso = None
+  st.session_state.mensaje_exito_reubicacion = None
+  st.session_state.mensaje_exito_picking = None
+  st.rerun()
 
 
 if not st.session_state.autenticado:
-    login()
-    st.title("📦 Sistema de Gestión de Bodega (WMS 2D Multi-Bodega)")
-    st.info("👈 Por favor, ingresa tus credenciales en la barra lateral para acceder al sistema.")
+  login()
+  st.title("📦 Sistema de Gestión de Bodega (WMS 2D Multi-Bodega)")
+  st.info(
+      "👈 Por favor, ingresa tus credenciales en la barra lateral para acceder"
+      " al sistema."
+  )
 
 else:
-    def cambiar_bodega_callback():
-        st.session_state.bodega_activa = st.session_state.selector_bodega_temp
 
-    if st.session_state.rol_actual == "superadmin":
-        role_class = "role-badge-superadmin"
-        role_text = "⚡ SuperAdmin"
-    elif st.session_state.rol_actual == "admin":
-        role_class = "role-badge-admin"
-        role_text = "👑 Administrador"
-    else:
-        role_class = "role-badge-operario"
-        role_text = "👷 Operario"
+  def cambiar_bodega_callback():
+    st.session_state.bodega_activa = st.session_state.selector_bodega_temp
 
-    st.sidebar.markdown(f"**Usuario:** <span class='user-badge'>{st.session_state.usuario_actual}</span>", unsafe_allow_html=True)
-    st.sidebar.markdown(f"**Rol:** <span class='{role_class}'>{role_text}</span>", unsafe_allow_html=True)
-    st.sidebar.markdown("<br>", unsafe_allow_html=True)
+  if st.session_state.rol_actual == "superadmin":
+    role_class = "role-badge-superadmin"
+    role_text = "⚡ SuperAdmin"
+  elif st.session_state.rol_actual == "admin":
+    role_class = "role-badge-admin"
+    role_text = "👑 Administrador"
+  else:
+    role_class = "role-badge-operario"
+    role_text = "👷 Operario"
 
-    df_bodegas = obtener_df("SELECT id_bodega, nombre FROM bodegas")
-    dict_bodegas = dict(zip(df_bodegas["id_bodega"], df_bodegas["nombre"])) if not df_bodegas.empty else {}
+  st.sidebar.markdown(
+      f"**Usuario:** <span"
+      f" class='user-badge'>{st.session_state.usuario_actual}</span>",
+      unsafe_allow_html=True,
+  )
+  st.sidebar.markdown(
+      f"**Rol:** <span class='{role_class}'>{role_text}</span>",
+      unsafe_allow_html=True,
+  )
+  st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
-    if st.session_state.rol_actual in ["superadmin", "admin"]:
-        st.sidebar.subheader("🏢 Seleccionar Bodega Activa")
-        opciones_bodega = list(dict_bodegas.keys())
-        idx_def = opciones_bodega.index(st.session_state.bodega_activa) if st.session_state.bodega_activa in opciones_bodega else 0
-        
-        st.sidebar.selectbox(
-            "Filtrar Vista por Bodega:",
-            opciones_bodega,
-            format_func=lambda x: f"{x} - {dict_bodegas.get(x, '')}",
-            index=idx_def,
-            key="selector_bodega_temp",
-            on_change=cambiar_bodega_callback
-        )
-    else:
-        st.sidebar.markdown(f"🏢 **Bodega Asignada:** `{st.session_state.bodega_usuario}` - {dict_bodegas.get(st.session_state.bodega_usuario, '')}")
-        st.session_state.bodega_activa = st.session_state.bodega_usuario
+  df_bodegas = obtener_df(f"SELECT id_bodega, nombre FROM {NOMBRE_BD}.bodegas")
+  dict_bodegas = (
+      dict(zip(df_bodegas["id_bodega"], df_bodegas["nombre"]))
+      if not df_bodegas.empty
+      else {}
+  )
 
-    if st.sidebar.button("Cerrar Sesión"):
-        logout()
+  if st.session_state.rol_actual in ["superadmin", "admin"]:
+    st.sidebar.subheader("🏢 Seleccionar Bodega Activa")
+    opciones_bodega = list(dict_bodegas.keys())
+    idx_def = (
+        opciones_bodega.index(st.session_state.bodega_activa)
+        if st.session_state.bodega_activa in opciones_bodega
+        else 0
+    )
 
-    st.sidebar.markdown("---")
+    st.sidebar.selectbox(
+        "Filtrar Vista por Bodega:",
+        opciones_bodega,
+        format_func=lambda x: f"{x} - {dict_bodegas.get(x, '')}",
+        index=idx_def,
+        key="selector_bodega_temp",
+        on_change=cambiar_bodega_callback,
+    )
+  else:
+    st.sidebar.markdown(
+        f"🏢 **Bodega Asignada:** `{st.session_state.bodega_usuario}` -"
+        f" {dict_bodegas.get(st.session_state.bodega_usuario, '')}"
+    )
+    st.session_state.bodega_activa = st.session_state.bodega_usuario
 
-    def cancelar_picking_callback():
+  if st.sidebar.button("Cerrar Sesión"):
+    logout()
+
+  st.sidebar.markdown("---")
+
+  def cancelar_picking_callback():
+    st.session_state.hoja_ruta_persistente = None
+    st.session_state.distancia_total_persistente = None
+    st.session_state.operaciones_pendientes_picking = []
+
+  def confirmar_picking_callback():
+    if st.session_state.operaciones_pendientes_picking:
+      try:
+        conn = obtener_conexion()
+        cursor = conn.cursor()
+
+        for op in st.session_state.operaciones_pendientes_picking:
+          if op["tipo"] == "DELETE":
+            cursor.execute(
+                f"UPDATE {NOMBRE_BD}.inventario SET cantidad = 0 WHERE"
+                " id_inventario = %s",
+                (op["id_inventario"],),
+            )
+            cursor.execute(
+                f"UPDATE {NOMBRE_BD}.ubicaciones SET estado = 'Libre' WHERE"
+                " id_ubicacion = %s AND id_bodega = %s",
+                (op["id_ubicacion"], st.session_state.bodega_activa),
+            )
+          elif op["tipo"] == "UPDATE":
+            cursor.execute(
+                f"UPDATE {NOMBRE_BD}.inventario SET cantidad = %s WHERE"
+                " id_inventario = %s",
+                (op["nueva_cantidad"], op["id_inventario"]),
+            )
+
+          cursor.execute(
+              f"INSERT INTO {NOMBRE_BD}.historial_movimientos (tipo_movimiento,"
+              " sku, id_ubicacion, cantidad, id_bodega) VALUES ('VENTA', %s,"
+              " %s, %s, %s)",
+              (
+                  op["sku"],
+                  op["id_ubicacion"],
+                  op["cantidad"],
+                  st.session_state.bodega_activa,
+              ),
+          )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        # RE-EJECUTAR AUTOMÁTICAMENTE FORECASTING TRAS VENTA
+        try:
+          ejecutar_job_forecasting(st.session_state.bodega_activa)
+        except Exception:
+          pass
+
         st.session_state.hoja_ruta_persistente = None
         st.session_state.distancia_total_persistente = None
         st.session_state.operaciones_pendientes_picking = []
+        st.session_state.mensaje_exito_picking = (
+            "🎉 ¡Venta/Picking confirmado con éxito!"
+        )
+      except Exception as e:
+        st.session_state.mensaje_exito_picking = f"❌ Error: {e}"
 
-    def confirmar_picking_callback():
-        if st.session_state.operaciones_pendientes_picking:
-            try:
-                conn = obtener_conexion()
-                cursor = conn.cursor()
+  bodega_nombre_header = dict_bodegas.get(
+      st.session_state.bodega_activa, st.session_state.bodega_activa
+  )
+  st.markdown(
+      "<h1 style='display: inline-block;'>📦 WMS 2D</h1> "
+      f"<span class='header-bodega-badge'>{st.session_state.bodega_activa} |"
+      f" {bodega_nombre_header}</span>",
+      unsafe_allow_html=True,
+  )
+  st.markdown("<br>", unsafe_allow_html=True)
 
-                for op in st.session_state.operaciones_pendientes_picking:
-                    if op["tipo"] == "DELETE":
-                        cursor.execute("UPDATE inventario SET cantidad = 0 WHERE id_inventario = %s", (op["id_inventario"],))
-                        cursor.execute("UPDATE ubicaciones SET estado = 'Libre' WHERE id_ubicacion = %s AND id_bodega = %s", (op["id_ubicacion"], st.session_state.bodega_activa))
-                    elif op["tipo"] == "UPDATE":
-                        cursor.execute("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (op["nueva_cantidad"], op["id_inventario"]))
+  if st.session_state.rol_actual == "superadmin":
+    modulos_disponibles = [
+        "MAPA 2D & ESTADO",
+        "RECEPCIÓN E INGRESO",
+        "REUBICACIÓN DE CASILLAS",
+        "PICKING / DESPACHO",
+        "DASHBOARD & KPIS",
+        "HISTORIAL KÁRDEX",
+        "CARGA MASIVA (EXCEL)",
+        "🛡️ AUDITORÍA & ACCESOS",
+        "GENERADOR DE ETIQUETAS QR",
+    ]
+  elif st.session_state.rol_actual == "admin":
+    modulos_disponibles = [
+        "MAPA 2D & ESTADO",
+        "RECEPCIÓN E INGRESO",
+        "REUBICACIÓN DE CASILLAS",
+        "PICKING / DESPACHO",
+        "DASHBOARD & KPIS",
+        "HISTORIAL KÁRDEX",
+        "🛡️ AUDITORÍA & ACCESOS",
+        "GENERADOR DE ETIQUETAS QR",
+    ]
+  else:
+    modulos_disponibles = [
+        "MAPA 2D & ESTADO",
+        "RECEPCIÓN E INGRESO",
+        "REUBICACIÓN DE CASILLAS",
+        "PICKING / DESPACHO",
+        "GENERADOR DE ETIQUETAS QR",
+    ]
 
-                    # REGISTRO EXPLÍCITO COMO 'VENTA' EN EL HISTORIAL / KÁRDEX
-                    cursor.execute(
-                        "INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad, id_bodega) VALUES ('VENTA', %s, %s, %s, %s)",
-                        (op["sku"], op["id_ubicacion"], op["cantidad"], st.session_state.bodega_activa)
-                    )
+  menu = st.sidebar.radio("Navegación / Módulos", modulos_disponibles)
 
-                conn.commit()
-                cursor.close()
-                conn.close()
-
-                st.session_state.hoja_ruta_persistente = None
-                st.session_state.distancia_total_persistente = None
-                st.session_state.operaciones_pendientes_picking = []
-                st.session_state.mensaje_exito_picking = "🎉 ¡Venta/Picking confirmado con éxito!"
-            except Exception as e:
-                st.session_state.mensaje_exito_picking = f"❌ Error: {e}"
-
-    bodega_nombre_header = dict_bodegas.get(st.session_state.bodega_activa, st.session_state.bodega_activa)
-    st.markdown(
-        f"<h1 style='display: inline-block;'>📦 WMS 2D</h1> "
-        f"<span class='header-bodega-badge'>{st.session_state.bodega_activa} | {bodega_nombre_header}</span>",
-        unsafe_allow_html=True
+  # MAPA 2D
+  if menu == "MAPA 2D & ESTADO":
+    st.header(
+        f"Mapa de Ocupación Física 2D ({st.session_state.bodega_activa})"
     )
-    st.markdown("<br>", unsafe_allow_html=True)
 
-    if st.session_state.rol_actual == "superadmin":
-        modulos_disponibles = [
-            "MAPA 2D & ESTADO",
-            "RECEPCIÓN E INGRESO",
-            "REUBICACIÓN DE CASILLAS",
-            "PICKING / DESPACHO",
-            "DASHBOARD & KPIS",
-            "HISTORIAL KÁRDEX",
-            "CARGA MASIVA (EXCEL)",
-            "🛡️ AUDITORÍA & ACCESOS",
-            "GENERADOR DE ETIQUETAS QR",
-        ]
-    elif st.session_state.rol_actual == "admin":
-        modulos_disponibles = [
-            "MAPA 2D & ESTADO",
-            "RECEPCIÓN E INGRESO",
-            "REUBICACIÓN DE CASILLAS",
-            "PICKING / DESPACHO",
-            "DASHBOARD & KPIS",
-            "HISTORIAL KÁRDEX",
-            "🛡️ AUDITORÍA & ACCESOS",
-            "GENERADOR DE ETIQUETAS QR",
-        ]
-    else:
-        modulos_disponibles = [
-            "MAPA 2D & ESTADO",
-            "RECEPCIÓN E INGRESO",
-            "REUBICACIÓN DE CASILLAS",
-            "PICKING / DESPACHO",
-            "GENERADOR DE ETIQUETAS QR",
-        ]
-
-    menu = st.sidebar.radio("Navegación / Módulos", modulos_disponibles)
-
-    # MAPA 2D
-    if menu == "MAPA 2D & ESTADO":
-        st.header(f"Mapa de Ocupación Física 2D ({st.session_state.bodega_activa})")
-
-        query = """
+    query = f"""
         SELECT u.id_ubicacion, u.coord_x, u.coord_y, u.estado,
                COALESCE(i.sku, 'Vacío') AS sku,
                COALESCE(i.cantidad, 0) AS cantidad,
                COALESCE(p.nombre, 'Sin Producto') AS producto,
                COALESCE(p.capacidad_por_casilla, 10) AS capacidad
-        FROM ubicaciones u
-        LEFT JOIN inventario i ON u.id_ubicacion = i.id_ubicacion
-        LEFT JOIN productos p ON i.sku = p.sku
+        FROM {NOMBRE_BD}.ubicaciones u
+        LEFT JOIN {NOMBRE_BD}.inventario i ON u.id_ubicacion = i.id_ubicacion
+        LEFT JOIN {NOMBRE_BD}.productos p ON i.sku = p.sku
         WHERE u.id_bodega = %s;
         """
-        df_mapa = obtener_df(query, (st.session_state.bodega_activa,))
+    df_mapa = obtener_df(query, (st.session_state.bodega_activa,))
 
-        if df_mapa.empty:
-            st.warning(f"No hay casillas registradas para la bodega {st.session_state.bodega_activa}.")
+    if df_mapa.empty:
+      st.warning(
+          "No hay casillas registradas para la bodega"
+          f" {st.session_state.bodega_activa}."
+      )
+    else:
+      df_mapa["Ocupacion_%"] = (
+          df_mapa["cantidad"] / df_mapa["capacidad"]
+      ) * 100
+
+      def calcular_estado_grafico(row):
+        if row["estado"] == "Inhabilitado":
+          return "Inhabilitado"
+        elif row["cantidad"] == 0:
+          return "Vacío / Libre"
+        elif row["Ocupacion_%"] >= 100:
+          return "LLENA"
         else:
-            df_mapa["Ocupacion_%"] = (df_mapa["cantidad"] / df_mapa["capacidad"]) * 100
+          return "Ocupado"
 
-            def calcular_estado_grafico(row):
-                if row["estado"] == "Inhabilitado":
-                    return "Inhabilitado"
-                elif row["cantidad"] == 0:
-                    return "Vacío / Libre"
-                elif row["Ocupacion_%"] >= 100:
-                    return "LLENA"
-                else:
-                    return "Ocupado"
+      df_mapa["Estado_Grafico"] = df_mapa.apply(
+          calcular_estado_grafico, axis=1
+      )
 
-            df_mapa["Estado_Grafico"] = df_mapa.apply(calcular_estado_grafico, axis=1)
+      df_skus_existentes = (
+          df_mapa[df_mapa["sku"] != "Vacío"][["sku", "producto"]]
+          .drop_duplicates()
+          .sort_values(by="sku")
+      )
 
-            df_skus_existentes = (
-                df_mapa[df_mapa["sku"] != "Vacío"][["sku", "producto"]]
-                .drop_duplicates()
-                .sort_values(by="sku")
-            )
+      opciones_buscador = ["🔍 Mostrar Todos los Productos"] + (
+          df_skus_existentes["sku"] + " - " + df_skus_existentes["producto"]
+      ).tolist()
 
-            opciones_buscador = ["🔍 Mostrar Todos los Productos"] + (
-                df_skus_existentes["sku"] + " - " + df_skus_existentes["producto"]
-            ).tolist()
+      col_search1, col_search2 = st.columns([2, 1])
 
-            col_search1, col_search2 = st.columns([2, 1])
+      with col_search1:
+        sku_buscado_sel = st.selectbox(
+            "📍 Buscador Global de Producto (Ubicador de SKU):",
+            opciones_buscador,
+        )
 
-            with col_search1:
-                sku_buscado_sel = st.selectbox("📍 Buscador Global de Producto (Ubicador de SKU):", opciones_buscador)
+      df_mapa_plot = df_mapa.copy()
 
-            df_mapa_plot = df_mapa.copy()
+      color_map = {
+          "Vacío / Libre": "#10B981",
+          "Ocupado": "#EF4444",
+          "LLENA": "#8B5CF6",
+          "Inhabilitado": "#94A3B8",
+          "Otro / Sin Coincidencia": "#E2E8F0",
+      }
 
-            color_map = {
-                "Vacío / Libre": "#10B981",
-                "Ocupado": "#EF4444",
-                "LLENA": "#8B5CF6",
-                "Inhabilitado": "#94A3B8",
-                "Otro / Sin Coincidencia": "#E2E8F0"
-            }
+      if sku_buscado_sel != "🔍 Mostrar Todos los Productos":
+        sku_clean_busqueda = sku_buscado_sel.split(" - ")[0]
+        coincidencias = df_mapa_plot[
+            df_mapa_plot["sku"] == sku_clean_busqueda
+        ]
 
-            if sku_buscado_sel != "🔍 Mostrar Todos los Productos":
-                sku_clean_busqueda = sku_buscado_sel.split(" - ")[0]
-                coincidencias = df_mapa_plot[df_mapa_plot["sku"] == sku_clean_busqueda]
+        with col_search2:
+          st.metric(
+              label=f"Ubicaciones para {sku_clean_busqueda}",
+              value=f"{len(coincidencias)} Casilla(s)",
+              delta=f"{coincidencias['cantidad'].sum()} Unidades Total",
+          )
 
-                with col_search2:
-                    st.metric(
-                        label=f"Ubicaciones para {sku_clean_busqueda}",
-                        value=f"{len(coincidencias)} Casilla(s)",
-                        delta=f"{coincidencias['cantidad'].sum()} Unidades Total",
-                    )
+        df_mapa_plot["Estado_Grafico"] = df_mapa_plot.apply(
+            lambda r: (
+                r["Estado_Grafico"]
+                if r["sku"] == sku_clean_busqueda
+                else "Otro / Sin Coincidencia"
+            ),
+            axis=1,
+        )
+        df_mapa_plot["Tamaño_Punto"] = df_mapa_plot.apply(
+            lambda r: 24 if r["sku"] == sku_clean_busqueda else 12, axis=1
+        )
+      else:
+        df_mapa_plot["Tamaño_Punto"] = 18
 
-                df_mapa_plot["Estado_Grafico"] = df_mapa_plot.apply(
-                    lambda r: r["Estado_Grafico"] if r["sku"] == sku_clean_busqueda else "Otro / Sin Coincidencia",
-                    axis=1,
-                )
-                df_mapa_plot["Tamaño_Punto"] = df_mapa_plot.apply(
-                    lambda r: 24 if r["sku"] == sku_clean_busqueda else 12, axis=1
-                )
-            else:
-                df_mapa_plot["Tamaño_Punto"] = 18
+      fig = px.scatter(
+          df_mapa_plot,
+          x="coord_x",
+          y="coord_y",
+          color="Estado_Grafico",
+          size="Tamaño_Punto",
+          size_max=24,
+          hover_name="id_ubicacion",
+          hover_data=[
+              "sku",
+              "producto",
+              "cantidad",
+              "capacidad",
+              "Ocupacion_%",
+          ],
+          text="id_ubicacion",
+          color_discrete_map=color_map,
+          title=(
+              "Distribución Espacial de Casillas -"
+              f" {st.session_state.bodega_activa}"
+          ),
+      )
 
-            fig = px.scatter(
-                df_mapa_plot,
-                x="coord_x",
-                y="coord_y",
-                color="Estado_Grafico",
-                size="Tamaño_Punto",
-                size_max=24,
-                hover_name="id_ubicacion",
-                hover_data=["sku", "producto", "cantidad", "capacidad", "Ocupacion_%"],
-                text="id_ubicacion",
-                color_discrete_map=color_map,
-                title=f"Distribución Espacial de Casillas - {st.session_state.bodega_activa}",
-            )
+      fig.update_traces(
+          marker=dict(line=dict(width=1, color="#1F3864")),
+          textposition="top center",
+          textfont=dict(size=12, color="#1F3864", family="Segoe UI Black"),
+      )
 
-            fig.update_traces(
-                marker=dict(line=dict(width=1, color="#1F3864")),
-                textposition="top center",
-                textfont=dict(size=12, color="#1F3864", family="Segoe UI Black"),
-            )
+      y_min, y_max = (
+          df_mapa_plot["coord_y"].min(),
+          df_mapa_plot["coord_y"].max(),
+      )
+      x_min, x_max = (
+          df_mapa_plot["coord_x"].min(),
+          df_mapa_plot["coord_x"].max(),
+      )
 
-            y_min, y_max = df_mapa_plot["coord_y"].min(), df_mapa_plot["coord_y"].max()
-            x_min, x_max = df_mapa_plot["coord_x"].min(), df_mapa_plot["coord_x"].max()
+      fig.update_layout(
+          xaxis=dict(
+              title="",
+              showticklabels=False,
+              range=[x_min - 0.5, x_max + 0.5],
+              gridcolor="#E2E8F0",
+              showgrid=True,
+              zeroline=False,
+          ),
+          yaxis=dict(
+              title="",
+              showticklabels=False,
+              range=[y_min - 0.3, y_max + 0.6],
+              gridcolor="#E2E8F0",
+              showgrid=True,
+              zeroline=False,
+          ),
+          height=520,
+          showlegend=True,
+          paper_bgcolor="#FFFFFF",
+          plot_bgcolor="#F8FAFC",
+          margin=dict(l=20, r=20, t=50, b=20),
+      )
+      st.plotly_chart(fig, use_container_width=True)
 
-            fig.update_layout(
-                xaxis=dict(
-                    title="",
-                    showticklabels=False,
-                    range=[x_min - 0.5, x_max + 0.5],
-                    gridcolor="#E2E8F0",
-                    showgrid=True,
-                    zeroline=False
-                ),
-                yaxis=dict(
-                    title="",
-                    showticklabels=False,
-                    range=[y_min - 0.3, y_max + 0.6],
-                    gridcolor="#E2E8F0",
-                    showgrid=True,
-                    zeroline=False
-                ),
-                height=520,
-                showlegend=True,
-                paper_bgcolor="#FFFFFF",
-                plot_bgcolor="#F8FAFC",
-                margin=dict(l=20, r=20, t=50, b=20)
-            )
-            st.plotly_chart(fig, use_container_width=True)
+      st.subheader("Detalle de Ubicaciones")
+      df_tabla_display = (
+          df_mapa[df_mapa["sku"] == sku_buscado_sel.split(" - ")[0]]
+          if sku_buscado_sel != "🔍 Mostrar Todos los Productos"
+          else df_mapa
+      )
+      st.dataframe(
+          df_tabla_display[[
+              "id_ubicacion",
+              "estado",
+              "sku",
+              "producto",
+              "cantidad",
+              "capacidad",
+              "Ocupacion_%",
+          ]],
+          use_container_width=True,
+      )
 
-            st.subheader("Detalle de Ubicaciones")
-            df_tabla_display = df_mapa[df_mapa["sku"] == sku_buscado_sel.split(" - ")[0]] if sku_buscado_sel != "🔍 Mostrar Todos los Productos" else df_mapa
-            st.dataframe(df_tabla_display[["id_ubicacion", "estado", "sku", "producto", "cantidad", "capacidad", "Ocupacion_%"]], use_container_width=True)
+  # RECEPCIÓN
+  elif menu == "RECEPCIÓN E INGRESO":
+    st.header(f"Ingreso de Stock a Bodega ({st.session_state.bodega_activa})")
 
-    # RECEPCIÓN
-    elif menu == "RECEPCIÓN E INGRESO":
-        st.header(f"Ingreso de Stock a Bodega ({st.session_state.bodega_activa})")
+    if st.session_state.mensaje_exito_ingreso:
+      st.success(st.session_state.mensaje_exito_ingreso)
+      st.session_state.mensaje_exito_ingreso = None
 
-        if st.session_state.mensaje_exito_ingreso:
-            st.success(st.session_state.mensaje_exito_ingreso)
-            st.session_state.mensaje_exito_ingreso = None
+    df_prods = obtener_df(
+        f"SELECT sku, nombre, capacidad_por_casilla FROM {NOMBRE_BD}.productos"
+    )
 
-        df_prods = obtener_df("SELECT sku, nombre, capacidad_por_casilla FROM productos")
+    if df_prods.empty:
+      st.warning("Asegúrate de tener productos registrados en el sistema.")
+    else:
+      sku_sel = st.selectbox(
+          "Seleccionar Producto (SKU)",
+          df_prods["sku"] + " - " + df_prods["nombre"],
+      )
+      sku_limpio = sku_sel.split(" - ")[0]
+      cap_max = int(
+          df_prods[df_prods["sku"] == sku_limpio][
+              "capacidad_por_casilla"
+          ].values[0]
+      )
 
-        if df_prods.empty:
-            st.warning("Asegúrate de tener productos registrados en el sistema.")
-        else:
-            sku_sel = st.selectbox("Seleccionar Producto (SKU)", df_prods["sku"] + " - " + df_prods["nombre"])
-            sku_limpio = sku_sel.split(" - ")[0]
-            cap_max = int(df_prods[df_prods["sku"] == sku_limpio]["capacidad_por_casilla"].values[0])
-
-            query_disponibles = """
+      query_disponibles = f"""
                 SELECT u.id_ubicacion, 
                        COALESCE(i.cantidad, 0) AS cantidad_actual,
                        (%s - COALESCE(i.cantidad, 0)) AS espacio_disponible,
@@ -741,8 +892,8 @@ else:
                            WHEN i.id_inventario IS NULL THEN 'Completamente Libre'
                            ELSE 'Parcialmente Ocupada (Consolidar)'
                        END AS tipo_casilla
-                FROM ubicaciones u
-                LEFT JOIN inventario i ON u.id_ubicacion = i.id_ubicacion
+                FROM {NOMBRE_BD}.ubicaciones u
+                LEFT JOIN {NOMBRE_BD}.inventario i ON u.id_ubicacion = i.id_ubicacion
                 WHERE u.id_bodega = %s
                   AND u.estado != 'Inhabilitado' 
                   AND (
@@ -750,77 +901,162 @@ else:
                       OR (i.sku = %s AND i.cantidad < %s)
                   );
             """
-            df_disponibles = obtener_df(query_disponibles, (cap_max, st.session_state.bodega_activa, sku_limpio, cap_max))
+      df_disponibles = obtener_df(
+          query_disponibles,
+          (cap_max, st.session_state.bodega_activa, sku_limpio, cap_max),
+      )
 
-            if df_disponibles.empty:
-                st.error(f"❌ No hay casillas disponibles ni espacio suficiente en la bodega {st.session_state.bodega_activa}.")
+      if df_disponibles.empty:
+        st.error(
+            "❌ No hay casillas disponibles ni espacio suficiente en la"
+            f" bodega {st.session_state.bodega_activa}."
+        )
+      else:
+        df_disponibles["opcion_texto"] = (
+            df_disponibles["id_ubicacion"]
+            + " ["
+            + df_disponibles["tipo_casilla"]
+            + " - Libre: "
+            + df_disponibles["espacio_disponible"].astype(str)
+            + " un.]"
+        )
+
+        with st.form("form_ingreso"):
+          ubi_seleccionada_txt = st.selectbox(
+              "Seleccionar Casilla Destino", df_disponibles["opcion_texto"]
+          )
+          ubi_limpia = ubi_seleccionada_txt.split(" [")[0]
+          espacio_max = int(
+              df_disponibles[df_disponibles["id_ubicacion"] == ubi_limpia][
+                  "espacio_disponible"
+              ].values[0]
+          )
+
+          st.info(
+              f"Espacio máximo disponible en la casilla {ubi_limpia}:"
+              f" {espacio_max} unidades."
+          )
+          cantidad_ingreso = st.number_input(
+              "Cantidad a Ingresar",
+              min_value=1,
+              max_value=espacio_max,
+              value=1,
+          )
+          btn_ingresar = st.form_submit_button(
+              "Confirmar Ingreso", type="primary"
+          )
+
+          if btn_ingresar:
+            inv_existente = obtener_df(
+                "SELECT id_inventario, cantidad FROM"
+                f" {NOMBRE_BD}.inventario WHERE id_ubicacion = %s",
+                (ubi_limpia,),
+            )
+
+            if inv_existente.empty:
+              ejecutar_query(
+                  f"INSERT INTO {NOMBRE_BD}.inventario (id_ubicacion, sku,"
+                  " cantidad) VALUES (%s, %s, %s)",
+                  (ubi_limpia, sku_limpio, cantidad_ingreso),
+              )
             else:
-                df_disponibles["opcion_texto"] = df_disponibles["id_ubicacion"] + " [" + df_disponibles["tipo_casilla"] + " - Libre: " + df_disponibles["espacio_disponible"].astype(str) + " un.]"
+              nueva_cant = (
+                  int(inv_existente["cantidad"].values[0]) + cantidad_ingreso
+              )
+              ejecutar_query(
+                  f"UPDATE {NOMBRE_BD}.inventario SET cantidad = %s WHERE"
+                  " id_ubicacion = %s",
+                  (nueva_cant, ubi_limpia),
+              )
 
-                with st.form("form_ingreso"):
-                    ubi_seleccionada_txt = st.selectbox("Seleccionar Casilla Destino", df_disponibles["opcion_texto"])
-                    ubi_limpia = ubi_seleccionada_txt.split(" [")[0]
-                    espacio_max = int(df_disponibles[df_disponibles["id_ubicacion"] == ubi_limpia]["espacio_disponible"].values[0])
+            ejecutar_query(
+                f"UPDATE {NOMBRE_BD}.ubicaciones SET estado = 'Ocupado' WHERE"
+                " id_ubicacion = %s AND id_bodega = %s",
+                (ubi_limpia, st.session_state.bodega_activa),
+            )
+            ejecutar_query(
+                f"INSERT INTO {NOMBRE_BD}.historial_movimientos"
+                " (tipo_movimiento, sku, id_ubicacion, cantidad, id_bodega)"
+                " VALUES ('ENTRADA', %s, %s, %s, %s)",
+                (
+                    sku_limpio,
+                    ubi_limpia,
+                    cantidad_ingreso,
+                    st.session_state.bodega_activa,
+                ),
+            )
 
-                    st.info(f"Espacio máximo disponible en la casilla {ubi_limpia}: {espacio_max} unidades.")
-                    cantidad_ingreso = st.number_input("Cantidad a Ingresar", min_value=1, max_value=espacio_max, value=1)
-                    btn_ingresar = st.form_submit_button("Confirmar Ingreso", type="primary")
+            st.session_state.mensaje_exito_ingreso = (
+                f"🎉 ¡Ingreso registrado! {cantidad_ingreso} un. de"
+                f" {sku_limpio} en {ubi_limpia}"
+                f" ({st.session_state.bodega_activa})."
+            )
+            st.rerun()
 
-                    if btn_ingresar:
-                        inv_existente = obtener_df("SELECT id_inventario, cantidad FROM inventario WHERE id_ubicacion = %s", (ubi_limpia,))
+  # REUBICACIÓN
+  elif menu == "REUBICACIÓN DE CASILLAS":
+    st.header(f"Reubicación Interna ({st.session_state.bodega_activa})")
 
-                        if inv_existente.empty:
-                            ejecutar_query("INSERT INTO inventario (id_ubicacion, sku, cantidad) VALUES (%s, %s, %s)", (ubi_limpia, sku_limpio, cantidad_ingreso))
-                        else:
-                            nueva_cant = int(inv_existente["cantidad"].values[0]) + cantidad_ingreso
-                            ejecutar_query("UPDATE inventario SET cantidad = %s WHERE id_ubicacion = %s", (nueva_cant, ubi_limpia))
+    if st.session_state.mensaje_exito_reubicacion:
+      st.success(st.session_state.mensaje_exito_reubicacion)
+      st.session_state.mensaje_exito_reubicacion = None
 
-                        ejecutar_query("UPDATE ubicaciones SET estado = 'Ocupado' WHERE id_ubicacion = %s AND id_bodega = %s", (ubi_limpia, st.session_state.bodega_activa))
-                        ejecutar_query("INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad, id_bodega) VALUES ('ENTRADA', %s, %s, %s, %s)", (sku_limpio, ubi_limpia, cantidad_ingreso, st.session_state.bodega_activa))
-
-                        st.session_state.mensaje_exito_ingreso = f"🎉 ¡Ingreso registrado! {cantidad_ingreso} un. de {sku_limpio} en {ubi_limpia} ({st.session_state.bodega_activa})."
-                        st.rerun()
-
-    # REUBICACIÓN
-    elif menu == "REUBICACIÓN DE CASILLAS":
-        st.header(f"Reubicación Interna ({st.session_state.bodega_activa})")
-
-        if st.session_state.mensaje_exito_reubicacion:
-            st.success(st.session_state.mensaje_exito_reubicacion)
-            st.session_state.mensaje_exito_reubicacion = None
-
-        df_origenes = obtener_df("""
+    df_origenes = obtener_df(
+        f"""
             SELECT i.id_inventario, i.id_ubicacion, i.sku, i.cantidad, p.nombre, p.capacidad_por_casilla
-            FROM inventario i
-            JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion
-            JOIN productos p ON i.sku = p.sku
+            FROM {NOMBRE_BD}.inventario i
+            JOIN {NOMBRE_BD}.ubicaciones u ON i.id_ubicacion = u.id_ubicacion
+            JOIN {NOMBRE_BD}.productos p ON i.sku = p.sku
             WHERE u.id_bodega = %s AND i.cantidad > 0
             ORDER BY i.id_ubicacion ASC
-        """, (st.session_state.bodega_activa,))
+        """,
+        (st.session_state.bodega_activa,),
+    )
 
-        if df_origenes.empty:
-            st.info(f"No hay casillas con stock para reubicar en {st.session_state.bodega_activa}.")
-        else:
-            df_origenes["display_origen"] = df_origenes["id_ubicacion"] + " | " + df_origenes["sku"] + " - " + df_origenes["nombre"] + " (Stock: " + df_origenes["cantidad"].astype(str) + ")"
+    if df_origenes.empty:
+      st.info(
+          "No hay casillas con stock para reubicar en"
+          f" {st.session_state.bodega_activa}."
+      )
+    else:
+      df_origenes["display_origen"] = (
+          df_origenes["id_ubicacion"]
+          + " | "
+          + df_origenes["sku"]
+          + " - "
+          + df_origenes["nombre"]
+          + " (Stock: "
+          + df_origenes["cantidad"].astype(str)
+          + ")"
+      )
 
-            col_orig, col_dest = st.columns(2)
+      col_orig, col_dest = st.columns(2)
 
-            with col_orig:
-                st.subheader("1. Origen")
-                origen_sel_txt = st.selectbox("Casilla a Trasladar", df_origenes["display_origen"])
-                ubi_origen = origen_sel_txt.split(" | ")[0]
-                row_origen = df_origenes[df_origenes["id_ubicacion"] == ubi_origen].iloc[0]
+      with col_orig:
+        st.subheader("1. Origen")
+        origen_sel_txt = st.selectbox(
+            "Casilla a Trasladar", df_origenes["display_origen"]
+        )
+        ubi_origen = origen_sel_txt.split(" | ")[0]
+        row_origen = df_origenes[
+            df_origenes["id_ubicacion"] == ubi_origen
+        ].iloc[0]
 
-                id_inv_origen = int(row_origen["id_inventario"])
-                sku_origen = row_origen["sku"]
-                cant_disponible_origen = int(row_origen["cantidad"])
-                cap_max_sku = int(row_origen["capacidad_por_casilla"])
+        id_inv_origen = int(row_origen["id_inventario"])
+        sku_origen = row_origen["sku"]
+        cant_disponible_origen = int(row_origen["cantidad"])
+        cap_max_sku = int(row_origen["capacidad_por_casilla"])
 
-                cant_a_mover = st.number_input(f"Cantidad a Mover (Máx: {cant_disponible_origen})", min_value=1, max_value=cant_disponible_origen, value=cant_disponible_origen)
+        cant_a_mover = st.number_input(
+            f"Cantidad a Mover (Máx: {cant_disponible_origen})",
+            min_value=1,
+            max_value=cant_disponible_origen,
+            value=cant_disponible_origen,
+        )
 
-            with col_dest:
-                st.subheader("2. Destino")
-                query_destinos = """
+      with col_dest:
+        st.subheader("2. Destino")
+        query_destinos = f"""
                     SELECT u.id_ubicacion, 
                            COALESCE(i.cantidad, 0) AS cantidad_actual,
                            (%s - COALESCE(i.cantidad, 0)) AS espacio_disponible,
@@ -828,8 +1064,8 @@ else:
                                WHEN i.id_inventario IS NULL THEN 'Completamente Libre'
                                ELSE 'Mismo SKU (Consolidar)'
                            END AS tipo_casilla
-                    FROM ubicaciones u
-                    LEFT JOIN inventario i ON u.id_ubicacion = i.id_ubicacion
+                    FROM {NOMBRE_BD}.ubicaciones u
+                    LEFT JOIN {NOMBRE_BD}.inventario i ON u.id_ubicacion = i.id_ubicacion
                     WHERE u.id_bodega = %s
                       AND u.estado != 'Inhabilitado' 
                       AND u.id_ubicacion != %s
@@ -839,606 +1075,998 @@ else:
                       )
                     ORDER BY u.id_ubicacion ASC;
                 """
-                df_destinos = obtener_df(query_destinos, (cap_max_sku, st.session_state.bodega_activa, ubi_origen, sku_origen, cant_a_mover, cap_max_sku))
+        df_destinos = obtener_df(
+            query_destinos,
+            (
+                cap_max_sku,
+                st.session_state.bodega_activa,
+                ubi_origen,
+                sku_origen,
+                cant_a_mover,
+                cap_max_sku,
+            ),
+        )
 
-                if df_destinos.empty:
-                    st.error("❌ No hay casillas destino disponibles.")
-                    btn_mover = False
-                else:
-                    df_destinos["display_destino"] = df_destinos["id_ubicacion"] + " [" + df_destinos["tipo_casilla"] + " - Libre: " + df_destinos["espacio_disponible"].astype(str) + " un.]"
-                    destino_sel_txt = st.selectbox("Casilla Destino", df_destinos["display_destino"])
-                    ubi_destino = destino_sel_txt.split(" [")[0]
+        if df_destinos.empty:
+          st.error("❌ No hay casillas destino disponibles.")
+          btn_mover = False
+        else:
+          df_destinos["display_destino"] = (
+              df_destinos["id_ubicacion"]
+              + " ["
+              + df_destinos["tipo_casilla"]
+              + " - Libre: "
+              + df_destinos["espacio_disponible"].astype(str)
+              + " un.]"
+          )
+          destino_sel_txt = st.selectbox(
+              "Casilla Destino", df_destinos["display_destino"]
+          )
+          ubi_destino = destino_sel_txt.split(" [")[0]
 
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    btn_mover = st.button("🚀 Confirmar Reubicación", type="primary", use_container_width=True)
+          st.markdown("<br>", unsafe_allow_html=True)
+          btn_mover = st.button(
+              "🚀 Confirmar Reubicación",
+              type="primary",
+              use_container_width=True,
+          )
 
-            if btn_mover:
-                if cant_a_mover == cant_disponible_origen:
-                    ejecutar_query("DELETE FROM inventario WHERE id_inventario = %s", (id_inv_origen,))
-                    ejecutar_query("UPDATE ubicaciones SET estado = 'Libre' WHERE id_ubicacion = %s AND id_bodega = %s", (ubi_origen, st.session_state.bodega_activa))
-                else:
-                    nueva_cant_origen = cant_disponible_origen - cant_a_mover
-                    ejecutar_query("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (nueva_cant_origen, id_inv_origen))
+      if btn_mover:
+        if cant_a_mover == cant_disponible_origen:
+          ejecutar_query(
+              f"DELETE FROM {NOMBRE_BD}.inventario WHERE id_inventario = %s",
+              (id_inv_origen,),
+          )
+          ejecutar_query(
+              f"UPDATE {NOMBRE_BD}.ubicaciones SET estado = 'Libre' WHERE"
+              " id_ubicacion = %s AND id_bodega = %s",
+              (ubi_origen, st.session_state.bodega_activa),
+          )
+        else:
+          nueva_cant_origen = cant_disponible_origen - cant_a_mover
+          ejecutar_query(
+              f"UPDATE {NOMBRE_BD}.inventario SET cantidad = %s WHERE"
+              " id_inventario = %s",
+              (nueva_cant_origen, id_inv_origen),
+          )
 
-                inv_destino = obtener_df("SELECT id_inventario, cantidad FROM inventario WHERE id_ubicacion = %s", (ubi_destino,))
+        inv_destino = obtener_df(
+            "SELECT id_inventario, cantidad FROM"
+            f" {NOMBRE_BD}.inventario WHERE id_ubicacion = %s",
+            (ubi_destino,),
+        )
 
-                if inv_destino.empty:
-                    ejecutar_query("INSERT INTO inventario (id_ubicacion, sku, cantidad) VALUES (%s, %s, %s)", (ubi_destino, sku_origen, cant_a_mover))
-                    ejecutar_query("UPDATE ubicaciones SET estado = 'Ocupado' WHERE id_ubicacion = %s AND id_bodega = %s", (ubi_destino, st.session_state.bodega_activa))
-                else:
-                    nueva_cant_dest = int(inv_destino["cantidad"].values[0]) + cant_a_mover
-                    id_inv_dest = int(inv_destino["id_inventario"].values[0])
-                    ejecutar_query("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (nueva_cant_dest, id_inv_dest))
+        if inv_destino.empty:
+          ejecutar_query(
+              f"INSERT INTO {NOMBRE_BD}.inventario (id_ubicacion, sku,"
+              " cantidad) VALUES (%s, %s, %s)",
+              (ubi_destino, sku_origen, cant_a_mover),
+          )
+          ejecutar_query(
+              f"UPDATE {NOMBRE_BD}.ubicaciones SET estado = 'Ocupado' WHERE"
+              " id_ubicacion = %s AND id_bodega = %s",
+              (ubi_destino, st.session_state.bodega_activa),
+          )
+        else:
+          nueva_cant_dest = (
+              int(inv_destino["cantidad"].values[0]) + cant_a_mover
+          )
+          id_inv_dest = int(inv_destino["id_inventario"].values[0])
+          ejecutar_query(
+              f"UPDATE {NOMBRE_BD}.inventario SET cantidad = %s WHERE"
+              " id_inventario = %s",
+              (nueva_cant_dest, id_inv_dest),
+          )
 
-                st.session_state.mensaje_exito_reubicacion = f"✅ Reubicados {cant_a_mover} un. de {sku_origen} de {ubi_origen} a {ubi_destino}."
-                st.rerun()
+        st.session_state.mensaje_exito_reubicacion = (
+            f"✅ Reubicados {cant_a_mover} un. de {sku_origen} de {ubi_origen} a"
+            f" {ubi_destino}."
+        )
+        st.rerun()
 
-    # PICKING
-    elif menu == "PICKING / DESPACHO":
-        st.header(f"Picking y Despacho ({st.session_state.bodega_activa})")
+  # PICKING
+  elif menu == "PICKING / DESPACHO":
+    st.header(f"Picking y Despacho ({st.session_state.bodega_activa})")
 
-        if st.session_state.mensaje_exito_picking:
-            st.success(st.session_state.mensaje_exito_picking)
-            st.session_state.mensaje_exito_picking = None
+    if st.session_state.mensaje_exito_picking:
+      st.success(st.session_state.mensaje_exito_picking)
+      st.session_state.mensaje_exito_picking = None
 
-        df_inv = obtener_df("""
+    df_inv = obtener_df(
+        f"""
             SELECT i.sku, p.nombre, SUM(i.cantidad) as total_disponible
-            FROM inventario i
-            JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion
-            JOIN productos p ON i.sku = p.sku
+            FROM {NOMBRE_BD}.inventario i
+            JOIN {NOMBRE_BD}.ubicaciones u ON i.id_ubicacion = u.id_ubicacion
+            JOIN {NOMBRE_BD}.productos p ON i.sku = p.sku
             WHERE u.id_bodega = %s
             GROUP BY i.sku, p.nombre
-        """, (st.session_state.bodega_activa,))
+        """,
+        (st.session_state.bodega_activa,),
+    )
 
-        if df_inv.empty:
-            st.info(f"No hay inventario disponible en {st.session_state.bodega_activa}.")
-        else:
-            st.subheader("1. Selección de Productos")
-            df_inv["opcion_display"] = df_inv["sku"] + " - " + df_inv["nombre"] + " (Stock: " + df_inv["total_disponible"].astype(str) + ")"
-            skus_seleccionados = st.multiselect("Productos a Despachar", df_inv["opcion_display"])
+    if df_inv.empty:
+      st.info(
+          "No hay inventario disponible en"
+          f" {st.session_state.bodega_activa}."
+      )
+    else:
+      st.subheader("1. Selección de Productos")
+      df_inv["opcion_display"] = (
+          df_inv["sku"]
+          + " - "
+          + df_inv["nombre"]
+          + " (Stock: "
+          + df_inv["total_disponible"].astype(str)
+          + ")"
+      )
+      skus_seleccionados = st.multiselect(
+          "Productos a Despachar", df_inv["opcion_display"]
+      )
 
-            if skus_seleccionados:
-                st.markdown("---")
-                st.subheader("2. Definir Cantidades")
-                cantidades_solicitadas = {}
-                cols = st.columns(min(len(skus_seleccionados), 3))
+      if skus_seleccionados:
+        st.markdown("---")
+        st.subheader("2. Definir Cantidades")
+        cantidades_solicitadas = {}
+        cols = st.columns(min(len(skus_seleccionados), 3))
 
-                for idx, item in enumerate(skus_seleccionados):
-                    sku_clean = item.split(" - ")[0]
-                    nombre_prod = item.split(" - ")[1].split(" (")[0]
-                    max_disp = int(df_inv[df_inv["sku"] == sku_clean]["total_disponible"].values[0])
+        for idx, item in enumerate(skus_seleccionados):
+          sku_clean = item.split(" - ")[0]
+          nombre_prod = item.split(" - ")[1].split(" (")[0]
+          max_disp = int(
+              df_inv[df_inv["sku"] == sku_clean]["total_disponible"].values[0]
+          )
 
-                    with cols[idx % 3]:
-                        st.markdown(f"**{sku_clean}** - {nombre_prod}")
-                        cant = st.number_input(f"Cantidad (Máx: {max_disp})", min_value=1, max_value=max_disp, value=1, key=f"cant_{sku_clean}")
-                        cantidades_solicitadas[sku_clean] = cant
+          with cols[idx % 3]:
+            st.markdown(f"**{sku_clean}** - {nombre_prod}")
+            cant = st.number_input(
+                f"Cantidad (Máx: {max_disp})",
+                min_value=1,
+                max_value=max_disp,
+                value=1,
+                key=f"cant_{sku_clean}",
+            )
+            cantidades_solicitadas[sku_clean] = cant
 
-                if st.button("🚀 Generar Ruta de Picking Óptima", type="primary"):
-                    puntos_extraccion = []
-                    operaciones_db = []
+        if st.button("🚀 Generar Ruta de Picking Óptima", type="primary"):
+          puntos_extraccion = []
+          operaciones_db = []
 
-                    for sku_clean, cant_solicitada in cantidades_solicitadas.items():
-                        df_casillas = obtener_df("""
+          for sku_clean, cant_solicitada in cantidades_solicitadas.items():
+            df_casillas = obtener_df(
+                f"""
                             SELECT i.id_inventario, i.id_ubicacion, i.cantidad, u.coord_x, u.coord_y
-                            FROM inventario i
-                            JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion
+                            FROM {NOMBRE_BD}.inventario i
+                            JOIN {NOMBRE_BD}.ubicaciones u ON i.id_ubicacion = u.id_ubicacion
                             WHERE i.sku = %s AND u.id_bodega = %s AND i.cantidad > 0
                             ORDER BY i.cantidad ASC
-                        """, (sku_clean, st.session_state.bodega_activa))
+                        """,
+                (sku_clean, st.session_state.bodega_activa),
+            )
 
-                        por_despachar = cant_solicitada
+            por_despachar = cant_solicitada
 
-                        for _, row in df_casillas.iterrows():
-                            if por_despachar <= 0:
-                                break
+            for _, row in df_casillas.iterrows():
+              if por_despachar <= 0:
+                break
 
-                            id_inv = row["id_inventario"]
-                            ubi = row["id_ubicacion"]
-                            cant_en_casilla = row["cantidad"]
-                            cx, cy = row["coord_x"], row["coord_y"]
+              id_inv = row["id_inventario"]
+              ubi = row["id_ubicacion"]
+              cant_en_casilla = row["cantidad"]
+              cx, cy = row["coord_x"], row["coord_y"]
 
-                            if cant_en_casilla <= por_despachar:
-                                despacho_casilla = cant_en_casilla
-                                operaciones_db.append({"tipo": "DELETE", "id_inventario": id_inv, "id_ubicacion": ubi, "sku": sku_clean, "cantidad": despacho_casilla})
-                            else:
-                                despacho_casilla = por_despachar
-                                nueva_cant = cant_en_casilla - por_despachar
-                                operaciones_db.append({"tipo": "UPDATE", "id_inventario": id_inv, "nueva_cantidad": nueva_cant, "id_ubicacion": ubi, "sku": sku_clean, "cantidad": despacho_casilla})
+              if cant_en_casilla <= por_despachar:
+                despacho_casilla = cant_en_casilla
+                operaciones_db.append({
+                    "tipo": "DELETE",
+                    "id_inventario": id_inv,
+                    "id_ubicacion": ubi,
+                    "sku": sku_clean,
+                    "cantidad": despacho_casilla,
+                })
+              else:
+                despacho_casilla = por_despachar
+                nueva_cant = cant_en_casilla - por_despachar
+                operaciones_db.append({
+                    "tipo": "UPDATE",
+                    "id_inventario": id_inv,
+                    "nueva_cantidad": nueva_cant,
+                    "id_ubicacion": ubi,
+                    "sku": sku_clean,
+                    "cantidad": despacho_casilla,
+                })
 
-                            por_despachar -= despacho_casilla
-                            puntos_extraccion.append({"SKU": sku_clean, "Ubicación": ubi, "Extraer": despacho_casilla, "x": cx, "y": cy})
+              por_despachar -= despacho_casilla
+              puntos_extraccion.append({
+                  "SKU": sku_clean,
+                  "Ubicación": ubi,
+                  "Extraer": despacho_casilla,
+                  "x": cx,
+                  "y": cy,
+              })
 
-                    pos_actual = (0, 0)
-                    ruta_ordenada = []
-                    distancia_total = 0.0
-                    pendientes = puntos_extraccion.copy()
-                    paso = 1
+          pos_actual = (0, 0)
+          ruta_ordenada = []
+          distancia_total = 0.0
+          pendientes = puntos_extraccion.copy()
+          paso = 1
 
-                    while pendientes:
-                        mejor_idx = 0
-                        menor_dist = abs(pendientes[0]["x"] - pos_actual[0]) + abs(pendientes[0]["y"] - pos_actual[1])
+          while pendientes:
+            mejor_idx = 0
+            menor_dist = abs(pendientes[0]["x"] - pos_actual[0]) + abs(
+                pendientes[0]["y"] - pos_actual[1]
+            )
 
-                        for i in range(1, len(pendientes)):
-                            dist = abs(pendientes[i]["x"] - pos_actual[0]) + abs(pendientes[i]["y"] - pos_actual[1])
-                            if dist < menor_dist:
-                                menor_dist = dist
-                                mejor_idx = i
+            for i in range(1, len(pendientes)):
+              dist = abs(pendientes[i]["x"] - pos_actual[0]) + abs(
+                  pendientes[i]["y"] - pos_actual[1]
+              )
+              if dist < menor_dist:
+                menor_dist = dist
+                mejor_idx = i
 
-                        siguiente_punto = pendientes.pop(mejor_idx)
-                        distancia_total += menor_dist
-                        pos_actual = (siguiente_punto["x"], siguiente_punto["y"])
-                        siguiente_punto["Paso"] = paso
-                        siguiente_punto["Dist. Tramo (m)"] = menor_dist
-                        ruta_ordenada.append(siguiente_punto)
-                        paso += 1
+            siguiente_punto = pendientes.pop(mejor_idx)
+            distancia_total += menor_dist
+            pos_actual = (siguiente_punto["x"], siguiente_punto["y"])
+            siguiente_punto["Paso"] = paso
+            siguiente_punto["Dist. Tramo (m)"] = menor_dist
+            ruta_ordenada.append(siguiente_punto)
+            paso += 1
 
-                    df_hoja_ruta = pd.DataFrame(ruta_ordenada)
-                    if not df_hoja_ruta.empty:
-                        df_hoja_ruta = df_hoja_ruta[["Paso", "Ubicación", "SKU", "Extraer", "Dist. Tramo (m)", "x", "y"]]
+          df_hoja_ruta = pd.DataFrame(ruta_ordenada)
+          if not df_hoja_ruta.empty:
+            df_hoja_ruta = df_hoja_ruta[[
+                "Paso",
+                "Ubicación",
+                "SKU",
+                "Extraer",
+                "Dist. Tramo (m)",
+                "x",
+                "y",
+            ]]
 
-                    st.session_state.hoja_ruta_persistente = df_hoja_ruta
-                    st.session_state.distancia_total_persistente = distancia_total
-                    st.session_state.operaciones_pendientes_picking = operaciones_db
-                    st.rerun()
+          st.session_state.hoja_ruta_persistente = df_hoja_ruta
+          st.session_state.distancia_total_persistente = distancia_total
+          st.session_state.operaciones_pendientes_picking = operaciones_db
+          st.rerun()
 
-            if st.session_state.hoja_ruta_persistente is not None:
-                st.markdown("---")
-                st.subheader("📋 Hoja de Ruta Activa:")
-                st.info(f"📏 Distancia Total Estimada: {st.session_state.distancia_total_persistente:.1f} m")
-                st.dataframe(st.session_state.hoja_ruta_persistente, use_container_width=True)
+      if st.session_state.hoja_ruta_persistente is not None:
+        st.markdown("---")
+        st.subheader("📋 Hoja de Ruta Activa:")
+        st.info(
+            "📏 Distancia Total Estimada:"
+            f" {st.session_state.distancia_total_persistente:.1f} m"
+        )
+        st.dataframe(
+            st.session_state.hoja_ruta_persistente, use_container_width=True
+        )
 
-                col_btn1, col_btn2 = st.columns(2)
-                with col_btn1:
-                    st.button("❌ Cancelar Ruta", use_container_width=True, on_click=cancelar_picking_callback)
-                with col_btn2:
-                    st.button("✅ Confirmar y Finalizar Venta", type="primary", use_container_width=True, on_click=confirmar_picking_callback)
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+          st.button(
+              "❌ Cancelar Ruta",
+              use_container_width=True,
+              on_click=cancelar_picking_callback,
+          )
+        with col_btn2:
+          st.button(
+              "✅ Confirmar y Finalizar Venta",
+              type="primary",
+              use_container_width=True,
+              on_click=confirmar_picking_callback,
+          )
 
-    # DASHBOARD
-    elif menu == "DASHBOARD & KPIS":
-        st.header(f"Analítica de Operación y Reportes - {st.session_state.bodega_activa}")
+  # DASHBOARD
+  elif menu == "DASHBOARD & KPIS":
+    st.header(
+        f"Analítica de Operación y Reportes - {st.session_state.bodega_activa}"
+    )
 
-        col_dash_title, col_dash_btn = st.columns([3, 1])
-        with col_dash_btn:
-            if st.button("🔮 Recalcular Forecasting", type="primary", use_container_width=True):
-                with st.spinner("Procesando proyección de demanda..."):
-                    try:
-                        cant_skus = ejecutar_job_forecasting(st.session_state.bodega_activa)
-                        st.success(f"Proyección calculada para {cant_skus} SKUs.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Asegúrate de haber creado la tabla `forecast_demanda`. Error: {e}")
+    col_dash_title, col_dash_btn = st.columns([3, 1])
+    with col_dash_btn:
+      if st.button(
+          "🔮 Recalcular Forecasting", type="primary", use_container_width=True
+      ):
+        with st.spinner("Procesando proyección de demanda..."):
+          try:
+            cant_skus = ejecutar_job_forecasting(st.session_state.bodega_activa)
+            st.success(f"Proyección calculada para {cant_skus} SKUs.")
+            st.rerun()
+          except Exception as e:
+            st.error(
+                "Asegúrate de haber creado la tabla `forecast_demanda`."
+                f" Error: {e}"
+            )
 
-        # BLOQUE 0: ALERTAS DE FORECASTING Y REABASTECIMIENTO
-        try:
-            df_forecast = obtener_df("""
+    # BLOQUE 0: ALERTAS DE FORECASTING Y REABASTECIMIENTO
+    try:
+      df_forecast = obtener_df(
+          f"""
                 SELECT f.sku, p.nombre, f.promedio_diario, f.prediccion_prox_30d, f.punto_reorden_sugerido, f.estado_stock, f.fecha_calculo,
                        COALESCE(SUM(i.cantidad), 0) AS stock_actual
-                FROM forecast_demanda f
-                JOIN productos p ON f.sku = p.sku
-                LEFT JOIN inventario i ON f.sku = i.sku
-                LEFT JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion AND u.id_bodega = f.id_bodega
+                FROM {NOMBRE_BD}.forecast_demanda f
+                JOIN {NOMBRE_BD}.productos p ON f.sku = p.sku
+                LEFT JOIN {NOMBRE_BD}.inventario i ON f.sku = i.sku
+                LEFT JOIN {NOMBRE_BD}.ubicaciones u ON i.id_ubicacion = u.id_ubicacion AND u.id_bodega = f.id_bodega
                 WHERE f.id_bodega = %s
                 GROUP BY f.sku, p.nombre, f.promedio_diario, f.prediccion_prox_30d, f.punto_reorden_sugerido, f.estado_stock, f.fecha_calculo
-                HAVING stock_actual <= f.punto_reorden_sugerido AND f.punto_reorden_sugerido > 0
-                ORDER BY f.punto_reorden_sugerido DESC;
-            """, (st.session_state.bodega_activa,))
+                HAVING stock_actual <= f.punto_reorden_sugerido
+                ORDER BY stock_actual ASC, f.punto_reorden_sugerido DESC;
+            """,
+          (st.session_state.bodega_activa,),
+      )
 
-            if not df_forecast.empty:
-                st.error(f"🚨 **ALERTAS DE REABASTECIMIENTO:** Se detectaron {len(df_forecast)} SKU(s) cuyo stock actual es menor o igual al punto de reorden sugerido.")
-                st.dataframe(df_forecast[["sku", "nombre", "stock_actual", "punto_reorden_sugerido", "prediccion_prox_30d", "estado_stock"]], use_container_width=True)
-            else:
-                st.success("✅ **SISTEMA DE DEMANDA:** Todos los SKUs cuentan con stock suficiente según el punto de reorden sugerido.")
-        except Exception:
-            st.info("ℹ️ Haz clic en **🔮 Recalcular Forecasting** para generar las predicciones de demanda iniciales.")
+      if not df_forecast.empty:
+        st.error(
+            f"🚨 **ALERTAS DE REABASTECIMIENTO:** Se detectaron {len(df_forecast)}"
+            " SKU(s) cuya cantidad en stock está en o por debajo del punto de"
+            " reorden."
+        )
+        st.dataframe(
+            df_forecast[[
+                "sku",
+                "nombre",
+                "stock_actual",
+                "punto_reorden_sugerido",
+                "prediccion_prox_30d",
+                "estado_stock",
+            ]],
+            use_container_width=True,
+        )
+      else:
+        st.success(
+            "✅ **SISTEMA DE DEMANDA:** Todos los SKUs cuentan con stock"
+            " suficiente según el punto de reorden sugerido."
+        )
+    except Exception:
+      st.info(
+          "ℹ️ Haz clic en **🔮 Recalcular Forecasting** para generar las"
+          " predicciones de demanda iniciales."
+      )
 
-        st.markdown("---")
+    st.markdown("---")
 
-        # BLOQUE 1: MÉTRICAS PRINCIPALES DE INVENTARIO
-        st.subheader("📌 Métricas Principales de Inventario")
+    # BLOQUE 1: MÉTRICAS PRINCIPALES DE INVENTARIO
+    st.subheader("📌 Métricas Principales de Inventario")
 
-        total_casillas = obtener_df("SELECT COUNT(*) as t FROM ubicaciones WHERE id_bodega = %s", (st.session_state.bodega_activa,))["t"].values[0] or 1
-        casillas_ocupadas = obtener_df("SELECT COUNT(*) as t FROM ubicaciones WHERE estado = 'Ocupado' AND id_bodega = %s", (st.session_state.bodega_activa,))["t"].values[0]
-        casillas_libres = total_casillas - casillas_ocupadas
+    total_casillas = (
+        obtener_df(
+            "SELECT COUNT(*) as t FROM"
+            f" {NOMBRE_BD}.ubicaciones WHERE id_bodega = %s",
+            (st.session_state.bodega_activa,),
+        )["t"].values[0]
+        or 1
+    )
+    casillas_ocupadas = obtener_df(
+        f"SELECT COUNT(*) as t FROM {NOMBRE_BD}.ubicaciones WHERE estado ="
+        " 'Ocupado' AND id_bodega = %s",
+        (st.session_state.bodega_activa,),
+    )["t"].values[0]
+    casillas_libres = total_casillas - casillas_ocupadas
 
-        stock_actual = obtener_df("""
+    stock_actual = obtener_df(
+        f"""
             SELECT COALESCE(SUM(i.cantidad), 0) as t 
-            FROM inventario i 
-            JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion 
+            FROM {NOMBRE_BD}.inventario i 
+            JOIN {NOMBRE_BD}.ubicaciones u ON i.id_ubicacion = u.id_ubicacion 
             WHERE u.id_bodega = %s
-        """, (st.session_state.bodega_activa,))["t"].values[0]
+        """,
+        (st.session_state.bodega_activa,),
+    )["t"].values[0]
 
-        capacidad_total_bodega = obtener_df("""
+    capacidad_total_bodega = (
+        obtener_df(
+            f"""
             SELECT COALESCE(SUM(p.capacidad_por_casilla), 500) as t 
-            FROM ubicaciones u 
-            LEFT JOIN inventario i ON u.id_ubicacion = i.id_ubicacion
-            LEFT JOIN productos p ON i.sku = p.sku 
+            FROM {NOMBRE_BD}.ubicaciones u 
+            LEFT JOIN {NOMBRE_BD}.inventario i ON u.id_ubicacion = i.id_ubicacion
+            LEFT JOIN {NOMBRE_BD}.productos p ON i.sku = p.sku 
             WHERE u.id_bodega = %s
-        """, (st.session_state.bodega_activa,))["t"].values[0] or 500
+        """,
+            (st.session_state.bodega_activa,),
+        )["t"].values[0]
+        or 500
+    )
 
-        total_skus = obtener_df("SELECT COUNT(*) as t FROM productos")["t"].values[0]
+    total_skus = obtener_df(f"SELECT COUNT(*) as t FROM {NOMBRE_BD}.productos")[
+        "t"
+    ].values[0]
 
-        kpi1, kpi2 = st.columns(2)
-        kpi1.metric("Total SKUs Registrados", f"{total_skus} Productos")
-        kpi2.metric("Total Unidades en Stock", f"{stock_actual:.1f} Un.")
+    kpi1, kpi2 = st.columns(2)
+    kpi1.metric("Total SKUs Registrados", f"{total_skus} Productos")
+    kpi2.metric("Total Unidades en Stock", f"{stock_actual:.1f} Un.")
 
-        st.markdown("---")
+    st.markdown("---")
 
-        # BLOQUE 2: RENDIMIENTO DE PICKING / DESPACHOS
-        st.subheader("🛒 Rendimiento de Ventas / Despachos")
+    # BLOQUE 2: RENDIMIENTO DE PICKING / DESPACHOS
+    st.subheader("🛒 Rendimiento de Ventas / Despachos")
 
-        picking_mes_actual = obtener_df("""
+    picking_mes_actual = obtener_df(
+        f"""
             SELECT COALESCE(SUM(cantidad), 0) as t 
-            FROM historial_movimientos 
+            FROM {NOMBRE_BD}.historial_movimientos 
             WHERE (tipo_movimiento = 'VENTA' OR tipo_movimiento = 'DESPACHO') AND id_bodega = %s 
               AND MONTH(fecha_hora) = MONTH(CURRENT_DATE()) 
               AND YEAR(fecha_hora) = YEAR(CURRENT_DATE())
-        """, (st.session_state.bodega_activa,))["t"].values[0]
+        """,
+        (st.session_state.bodega_activa,),
+    )["t"].values[0]
 
-        picking_mes_pasado = obtener_df("""
+    picking_mes_pasado = obtener_df(
+        f"""
             SELECT COALESCE(SUM(cantidad), 0) as t 
-            FROM historial_movimientos 
+            FROM {NOMBRE_BD}.historial_movimientos 
             WHERE (tipo_movimiento = 'VENTA' OR tipo_movimiento = 'DESPACHO') AND id_bodega = %s 
               AND MONTH(fecha_hora) = MONTH(CURRENT_DATE() - INTERVAL 1 MONTH) 
               AND YEAR(fecha_hora) = YEAR(CURRENT_DATE() - INTERVAL 1 MONTH)
-        """, (st.session_state.bodega_activa,))["t"].values[0]
+        """,
+        (st.session_state.bodega_activa,),
+    )["t"].values[0]
 
-        diff_picking = picking_mes_actual - picking_mes_pasado
-        delta_str = f"↑ +{diff_picking:.0f} Unid. vs Mes Pasado" if diff_picking >= 0 else f"↓ {diff_picking:.0f} Unid. vs Mes Pasado"
+    diff_picking = picking_mes_actual - picking_mes_pasado
+    delta_str = (
+        f"↑ +{diff_picking:.0f} Unid. vs Mes Pasado"
+        if diff_picking >= 0
+        else f"↓ {diff_picking:.0f} Unid. vs Mes Pasado"
+    )
 
-        p_col1, p_col2, p_col3 = st.columns(3)
-        p_col1.metric("Ventas Mes Actual", f"{picking_mes_actual:.0f} Unidades", delta_str)
-        p_col2.metric("Ventas Mes Pasado", f"{picking_mes_pasado:.0f} Unidades")
-        p_col3.metric("Casillas Disponibles / Libres", f"{casillas_libres}")
+    p_col1, p_col2, p_col3 = st.columns(3)
+    p_col1.metric(
+        "Ventas Mes Actual", f"{picking_mes_actual:.0f} Unidades", delta_str
+    )
+    p_col2.metric("Ventas Mes Pasado", f"{picking_mes_pasado:.0f} Unidades")
+    p_col3.metric("Casillas Disponibles / Libres", f"{casillas_libres}")
 
-        st.markdown("---")
+    st.markdown("---")
 
-        # BLOQUE 3: TENDENCIA DIARIA DE PICKING CON FILTRO DE SKU
-        st.subheader("📈 Tendencia Diaria de Ventas (Días 1 al 31)")
+    # BLOQUE 3: TENDENCIA DIARIA DE PICKING CON FILTRO DE SKU
+    st.subheader("📈 Tendencia Diaria de Ventas (Días 1 al 31)")
 
-        df_skus_picking = obtener_df("""
+    df_skus_picking = obtener_df(
+        f"""
             SELECT DISTINCT h.sku, p.nombre
-            FROM historial_movimientos h
-            JOIN productos p ON h.sku = p.sku
+            FROM {NOMBRE_BD}.historial_movimientos h
+            JOIN {NOMBRE_BD}.productos p ON h.sku = p.sku
             WHERE (h.tipo_movimiento = 'VENTA' OR h.tipo_movimiento = 'DESPACHO') AND h.id_bodega = %s
             ORDER BY h.sku ASC
-        """, (st.session_state.bodega_activa,))
+        """,
+        (st.session_state.bodega_activa,),
+    )
 
-        opciones_filtro_sku = ["🔍 Todos los SKUs (Suma Global)"] + (
-            df_skus_picking["sku"] + " - " + df_skus_picking["nombre"]
-        ).tolist() if not df_skus_picking.empty else ["🔍 Todos los SKUs (Suma Global)"]
+    opciones_filtro_sku = (
+        ["🔍 Todos los SKUs (Suma Global)"]
+        + (df_skus_picking["sku"] + " - " + df_skus_picking["nombre"]).tolist()
+        if not df_skus_picking.empty
+        else ["🔍 Todos los SKUs (Suma Global)"]
+    )
 
-        sku_filtro_sel = st.selectbox("📦 Filtrar Serie Temporal por SKU:", opciones_filtro_sku)
+    sku_filtro_sel = st.selectbox(
+        "📦 Filtrar Serie Temporal por SKU:", opciones_filtro_sku
+    )
 
-        if sku_filtro_sel == "🔍 Todos los SKUs (Suma Global)":
-            query_picking_diario = """
+    if sku_filtro_sel == "🔍 Todos los SKUs (Suma Global)":
+      query_picking_diario = f"""
                 SELECT DAY(fecha_hora) AS dia,
                        SUM(CASE WHEN MONTH(fecha_hora) = MONTH(CURRENT_DATE()) THEN cantidad ELSE 0 END) AS Mes_Actual,
                        SUM(CASE WHEN MONTH(fecha_hora) = MONTH(CURRENT_DATE() - INTERVAL 1 MONTH) THEN cantidad ELSE 0 END) AS Mes_Anterior
-                FROM historial_movimientos
+                FROM {NOMBRE_BD}.historial_movimientos
                 WHERE (tipo_movimiento = 'VENTA' OR tipo_movimiento = 'DESPACHO') AND id_bodega = %s
                 GROUP BY DAY(fecha_hora)
             """
-            params_picking = (st.session_state.bodega_activa,)
-        else:
-            sku_clean_filtro = sku_filtro_sel.split(" - ")[0]
-            query_picking_diario = """
+      params_picking = (st.session_state.bodega_activa,)
+    else:
+      sku_clean_filtro = sku_filtro_sel.split(" - ")[0]
+      query_picking_diario = f"""
                 SELECT DAY(fecha_hora) AS dia,
                        SUM(CASE WHEN MONTH(fecha_hora) = MONTH(CURRENT_DATE()) THEN cantidad ELSE 0 END) AS Mes_Actual,
                        SUM(CASE WHEN MONTH(fecha_hora) = MONTH(CURRENT_DATE() - INTERVAL 1 MONTH) THEN cantidad ELSE 0 END) AS Mes_Anterior
-                FROM historial_movimientos
+                FROM {NOMBRE_BD}.historial_movimientos
                 WHERE (tipo_movimiento = 'VENTA' OR tipo_movimiento = 'DESPACHO') AND id_bodega = %s AND sku = %s
                 GROUP BY DAY(fecha_hora)
             """
-            params_picking = (st.session_state.bodega_activa, sku_clean_filtro)
+      params_picking = (st.session_state.bodega_activa, sku_clean_filtro)
 
-        df_picking_diario = obtener_df(query_picking_diario, params_picking)
+    df_picking_diario = obtener_df(query_picking_diario, params_picking)
 
-        df_31_dias = pd.DataFrame({"dia": list(range(1, 32))})
-        if not df_picking_diario.empty:
-            df_chart_picking = pd.merge(df_31_dias, df_picking_diario, on="dia", how="left").fillna(0)
-        else:
-            df_chart_picking = df_31_dias.copy()
-            df_chart_picking["Mes_Actual"] = 0
-            df_chart_picking["Mes_Anterior"] = 0
+    df_31_dias = pd.DataFrame({"dia": list(range(1, 32))})
+    if not df_picking_diario.empty:
+      df_chart_picking = pd.merge(
+          df_31_dias, df_picking_diario, on="dia", how="left"
+      ).fillna(0)
+    else:
+      df_chart_picking = df_31_dias.copy()
+      df_chart_picking["Mes_Actual"] = 0
+      df_chart_picking["Mes_Anterior"] = 0
 
-        df_chart_melted = df_chart_picking.melt(
-            id_vars=["dia"], 
-            value_vars=["Mes_Actual", "Mes_Anterior"],
-            var_name="Periodo", 
-            value_name="Unidades Despachadas"
-        )
-        df_chart_melted["Periodo"] = df_chart_melted["Periodo"].replace({"Mes_Actual": "Mes Actual", "Mes_Anterior": "Mes Anterior"})
+    df_chart_melted = df_chart_picking.melt(
+        id_vars=["dia"],
+        value_vars=["Mes_Actual", "Mes_Anterior"],
+        var_name="Periodo",
+        value_name="Unidades Despachadas",
+    )
+    df_chart_melted["Periodo"] = df_chart_melted["Periodo"].replace(
+        {"Mes_Actual": "Mes Actual", "Mes_Anterior": "Mes Anterior"}
+    )
 
-        fig_picking_line = px.line(
-            df_chart_melted,
-            x="dia",
-            y="Unidades Despachadas",
-            color="Periodo",
-            markers=True,
-            title=f"Evolución del Picking / Ventas Diario - {sku_filtro_sel}",
-            labels={"dia": "Día del Mes", "Unidades Despachadas": "Unidades Despachadas"},
-            color_discrete_map={"Mes Actual": "#1F3864", "Mes Anterior": "#94A3B8"}
-        )
-        fig_picking_line.update_layout(
-            height=400, 
-            xaxis=dict(tickmode="linear", dtick=1),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)"
-        )
-        st.plotly_chart(fig_picking_line, use_container_width=True)
+    fig_picking_line = px.line(
+        df_chart_melted,
+        x="dia",
+        y="Unidades Despachadas",
+        color="Periodo",
+        markers=True,
+        title=f"Evolución del Picking / Ventas Diario - {sku_filtro_sel}",
+        labels={
+            "dia": "Día del Mes",
+            "Unidades Despachadas": "Unidades Despachadas",
+        },
+        color_discrete_map={
+            "Mes Actual": "#1F3864",
+            "Mes Anterior": "#94A3B8",
+        },
+    )
+    fig_picking_line.update_layout(
+        height=400,
+        xaxis=dict(tickmode="linear", dtick=1),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    st.plotly_chart(fig_picking_line, use_container_width=True)
 
-        st.markdown("---")
+    st.markdown("---")
 
-        # BLOQUE 4: GRÁFICOS DE DONA / ANILLO COMPARATIVOS
-        col_g1, col_g2 = st.columns(2)
+    # BLOQUE 4: GRÁFICOS DE DONA / ANILLO COMPARATIVOS
+    col_g1, col_g2 = st.columns(2)
 
-        with col_g1:
-            st.subheader("📦 Ocupación Volumétrica de Bodega")
-            
-            capacidad_libre = max(0.0, capacidad_total_bodega - stock_actual)
-            df_volumen = pd.DataFrame({
-                "Estado_Volumen": ["Capacidad Usada", "Capacidad Disponible"],
-                "Unidades": [stock_actual, capacidad_libre]
-            })
+    with col_g1:
+      st.subheader("📦 Ocupación Volumétrica de Bodega")
 
-            fig_pie_vol = px.pie(
-                df_volumen,
-                names="Estado_Volumen",
-                values="Unidades",
-                hole=0.4,
-                color="Estado_Volumen",
-                color_discrete_map={"Capacidad Usada": "#1F3864", "Capacidad Disponible": "#E2E8F0"}
-            )
-            fig_pie_vol.update_traces(textinfo="percent+label")
-            fig_pie_vol.update_layout(height=380, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig_pie_vol, use_container_width=True)
+      capacidad_libre = max(0.0, capacidad_total_bodega - stock_actual)
+      df_volumen = pd.DataFrame({
+          "Estado_Volumen": ["Capacidad Usada", "Capacidad Disponible"],
+          "Unidades": [stock_actual, capacidad_libre],
+      })
 
-        with col_g2:
-            st.subheader("🎯 Ocupación Física de Casillas")
-            df_estados = obtener_df("""
+      fig_pie_vol = px.pie(
+          df_volumen,
+          names="Estado_Volumen",
+          values="Unidades",
+          hole=0.4,
+          color="Estado_Volumen",
+          color_discrete_map={
+              "Capacidad Usada": "#1F3864",
+              "Capacidad Disponible": "#E2E8F0",
+          },
+      )
+      fig_pie_vol.update_traces(textinfo="percent+label")
+      fig_pie_vol.update_layout(
+          height=380,
+          paper_bgcolor="rgba(0,0,0,0)",
+          plot_bgcolor="rgba(0,0,0,0)",
+      )
+      st.plotly_chart(fig_pie_vol, use_container_width=True)
+
+    with col_g2:
+      st.subheader("🎯 Ocupación Física de Casillas")
+      df_estados = obtener_df(
+          f"""
                 SELECT estado, COUNT(*) as cantidad
-                FROM ubicaciones
+                FROM {NOMBRE_BD}.ubicaciones
                 WHERE id_bodega = %s
                 GROUP BY estado
-            """, (st.session_state.bodega_activa,))
+            """,
+          (st.session_state.bodega_activa,),
+      )
 
-            if df_estados.empty:
-                st.info("No hay casillas registradas.")
-            else:
-                fig_pie = px.pie(
-                    df_estados,
-                    names="estado",
-                    values="cantidad",
-                    hole=0.4,
-                    color="estado",
-                    color_discrete_map={"Libre": "#10B981", "Ocupado": "#3B82F6", "Inhabilitado": "#94A3B8"}
-                )
-                fig_pie.update_traces(textinfo="percent+label")
-                fig_pie.update_layout(height=380, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-                st.plotly_chart(fig_pie, use_container_width=True)
+      if df_estados.empty:
+        st.info("No hay casillas registradas.")
+      else:
+        fig_pie = px.pie(
+            df_estados,
+            names="estado",
+            values="cantidad",
+            hole=0.4,
+            color="estado",
+            color_discrete_map={
+                "Libre": "#10B981",
+                "Ocupado": "#3B82F6",
+                "Inhabilitado": "#94A3B8",
+            },
+        )
+        fig_pie.update_traces(textinfo="percent+label")
+        fig_pie.update_layout(
+            height=380,
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig_pie, use_container_width=True)
 
-        st.markdown("---")
+    st.markdown("---")
 
-        # BLOQUE 5: REPORTES DE SKUs SIN MOVIMIENTO (BAJA ROTACIÓN)
-        st.subheader("🧊 Reporte de SKUs Sin Movimiento (Baja Rotación / Stock Inactivo)")
+    # BLOQUE 5: REPORTES DE SKUs SIN MOVIMIENTO (BAJA ROTACIÓN)
+    st.subheader(
+        "🧊 Reporte de SKUs Sin Movimiento (Baja Rotación / Stock Inactivo)"
+    )
 
-        dias_umbral = st.slider("🗿 Seleccionar umbral de inactividad (Días sin movimiento):", min_value=0, max_value=90, value=0)
+    dias_umbral = st.slider(
+        "🗿 Seleccionar umbral de inactividad (Días sin movimiento):",
+        min_value=0,
+        max_value=90,
+        value=0,
+    )
 
-        query_inactivos = """
+    query_inactivos = f"""
             SELECT i.sku, p.nombre, SUM(i.cantidad) AS stock_actual,
                    COALESCE(MAX(h.fecha_hora), 'Sin Movimientos Registrados') AS ultima_fecha_movimiento,
                    COALESCE(DATEDIFF(CURRENT_DATE(), MAX(h.fecha_hora)), 999) AS dias_sin_movimiento
-            FROM inventario i
-            JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion
-            JOIN productos p ON i.sku = p.sku
-            LEFT JOIN historial_movimientos h ON i.sku = h.sku AND h.id_bodega = %s
+            FROM {NOMBRE_BD}.inventario i
+            JOIN {NOMBRE_BD}.ubicaciones u ON i.id_ubicacion = u.id_ubicacion
+            JOIN {NOMBRE_BD}.productos p ON i.sku = p.sku
+            LEFT JOIN {NOMBRE_BD}.historial_movimientos h ON i.sku = h.sku AND h.id_bodega = %s
             WHERE u.id_bodega = %s
             GROUP BY i.sku, p.nombre
             HAVING dias_sin_movimiento >= %s
             ORDER BY dias_sin_movimiento DESC;
         """
-        df_inactivos = obtener_df(query_inactivos, (st.session_state.bodega_activa, st.session_state.bodega_activa, dias_umbral))
+    df_inactivos = obtener_df(
+        query_inactivos,
+        (
+            st.session_state.bodega_activa,
+            st.session_state.bodega_activa,
+            dias_umbral,
+        ),
+    )
 
-        if df_inactivos.empty:
-            st.success(f"🎉 ¡Excelente! No hay SKUs con más de {dias_umbral} días sin movimiento en {st.session_state.bodega_activa}.")
-        else:
-            st.warning(f"⚠️ Se encontraron {len(df_inactivos)} SKU(s) con stock guardado sin registrar ningún movimiento en {dias_umbral} días o más.")
-            st.dataframe(df_inactivos[["sku", "nombre", "stock_actual", "ultima_fecha_movimiento", "dias_sin_movimiento"]], use_container_width=True)
+    if df_inactivos.empty:
+      st.success(
+          f"🎉 ¡Excelente! No hay SKUs con más de {dias_umbral} días sin"
+          f" movimiento en {st.session_state.bodega_activa}."
+      )
+    else:
+      st.warning(
+          f"⚠️ Se encontraron {len(df_inactivos)} SKU(s) con stock guardado sin"
+          f" registrar ningún movimiento en {dias_umbral} días o más."
+      )
+      st.dataframe(
+          df_inactivos[[
+              "sku",
+              "nombre",
+              "stock_actual",
+              "ultima_fecha_movimiento",
+              "dias_sin_movimiento",
+          ]],
+          use_container_width=True,
+      )
 
-        st.markdown("---")
+    st.markdown("---")
 
-        # BLOQUE 6: EXPORTAR REPORTE EXCEL COMPLETO CON FORECASTING
-        df_inv_exp = obtener_df("SELECT i.*, u.id_bodega FROM inventario i JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion WHERE u.id_bodega = %s", (st.session_state.bodega_activa,))
-        df_kardex_exp = obtener_df("SELECT * FROM historial_movimientos WHERE id_bodega = %s ORDER BY fecha_hora DESC", (st.session_state.bodega_activa,))
-        df_forecast_exp = obtener_df("SELECT * FROM forecast_demanda WHERE id_bodega = %s", (st.session_state.bodega_activa,))
+    # BLOQUE 6: EXPORTAR REPORTE EXCEL COMPLETO CON FORECASTING
+    df_inv_exp = obtener_df(
+        f"SELECT i.*, u.id_bodega FROM {NOMBRE_BD}.inventario i JOIN"
+        f" {NOMBRE_BD}.ubicaciones u ON i.id_ubicacion = u.id_ubicacion WHERE"
+        " u.id_bodega = %s",
+        (st.session_state.bodega_activa,),
+    )
+    df_kardex_exp = obtener_df(
+        f"SELECT * FROM {NOMBRE_BD}.historial_movimientos WHERE id_bodega = %s"
+        " ORDER BY fecha_hora DESC",
+        (st.session_state.bodega_activa,),
+    )
+    df_forecast_exp = obtener_df(
+        f"SELECT * FROM {NOMBRE_BD}.forecast_demanda WHERE id_bodega = %s",
+        (st.session_state.bodega_activa,),
+    )
 
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            df_inv_exp.to_excel(writer, sheet_name="Inventario_Actual", index=False)
-            df_kardex_exp.to_excel(writer, sheet_name="Kardex_Movimientos", index=False)
-            if not df_forecast_exp.empty:
-                df_forecast_exp.to_excel(writer, sheet_name="Forecasting_Demanda", index=False)
-            if not df_inactivos.empty:
-                df_inactivos.to_excel(writer, sheet_name="Stock_Inactivo", index=False)
-
-        st.download_button(
-            label=f"📥 Descargar Reporte Completo {st.session_state.bodega_activa} (.xlsx)",
-            data=buffer.getvalue(),
-            file_name=f"Reporte_WMS_Completo_{st.session_state.bodega_activa}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary"
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+      df_inv_exp.to_excel(
+          writer, sheet_name="Inventario_Actual", index=False
+      )
+      df_kardex_exp.to_excel(
+          writer, sheet_name="Kardex_Movimientos", index=False
+      )
+      if not df_forecast_exp.empty:
+        df_forecast_exp.to_excel(
+            writer, sheet_name="Forecasting_Demanda", index=False
+        )
+      if not df_inactivos.empty:
+        df_inactivos.to_excel(
+            writer, sheet_name="Stock_Inactivo", index=False
         )
 
-    # KÁRDEX
-    elif menu == "HISTORIAL KÁRDEX":
-        st.header(f"Trazabilidad ({st.session_state.bodega_activa})")
-        df_kardex = obtener_df("SELECT id_movimiento, fecha_hora, tipo_movimiento, sku, id_ubicacion, cantidad, id_bodega FROM historial_movimientos WHERE id_bodega = %s ORDER BY fecha_hora DESC", (st.session_state.bodega_activa,))
+    st.download_button(
+        label=(
+            "📥 Descargar Reporte Completo"
+            f" {st.session_state.bodega_activa} (.xlsx)"
+        ),
+        data=buffer.getvalue(),
+        file_name=(
+            "Reporte_WMS_Completo_"
+            f"{st.session_state.bodega_activa}.xlsx"
+        ),
+        mime=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        type="primary",
+    )
 
-        if df_kardex.empty:
-            st.info(f"No hay movimientos registrados en {st.session_state.bodega_activa}.")
-        else:
-            st.dataframe(df_kardex, use_container_width=True)
+  # KÁRDEX
+  elif menu == "HISTORIAL KÁRDEX":
+    st.header(f"Trazabilidad ({st.session_state.bodega_activa})")
+    df_kardex = obtener_df(
+        "SELECT id_movimiento, fecha_hora, tipo_movimiento, sku, id_ubicacion,"
+        f" cantidad, id_bodega FROM {NOMBRE_BD}.historial_movimientos WHERE"
+        " id_bodega = %s ORDER BY fecha_hora DESC",
+        (st.session_state.bodega_activa,),
+    )
 
-    # AUDITORÍA & ACCESOS (ADMIN Y SUPERADMIN)
-    elif menu == "🛡️ AUDITORÍA & ACCESOS":
-        st.header("🛡️ Control de Conexiones y Auditoría de Sistema")
-        st.info("Monitoreo en tiempo real de últimas conexiones por usuario y registro histórico de accesos.")
+    if df_kardex.empty:
+      st.info(
+          f"No hay movimientos registrados en {st.session_state.bodega_activa}."
+      )
+    else:
+      st.dataframe(df_kardex, use_container_width=True)
 
-        st.subheader("👥 Última Conexión Registrada por Usuario")
-        query_ultimos_accesos = """
+  # AUDITORÍA & ACCESOS (ADMIN Y SUPERADMIN)
+  elif menu == "🛡️ AUDITORÍA & ACCESOS":
+    st.header("🛡️ Control de Conexiones y Auditoría de Sistema")
+    st.info(
+        "Monitoreo en tiempo real de últimas conexiones por usuario y registro"
+        " histórico de accesos."
+    )
+
+    st.subheader("👥 Última Conexión Registrada por Usuario")
+    query_ultimos_accesos = f"""
             SELECT usuario, rol, bodega, MAX(fecha_hora) AS ultima_conexion
-            FROM log_accesos
+            FROM {NOMBRE_BD}.log_accesos
             WHERE accion = 'INICIO_SESION'
             GROUP BY usuario, rol, bodega
             ORDER BY ultima_conexion DESC;
         """
-        try:
-            df_ultimos = obtener_df(query_ultimos_accesos)
-            if df_ultimos.empty:
-                st.warning("Aún no se han registrado inicios de sesión en la tabla de auditoría.")
-            else:
-                cols_u = st.columns(min(len(df_ultimos), 4))
-                for idx, r in df_ultimos.iterrows():
-                    with cols_u[idx % 4]:
-                        st.metric(
-                            label=f"👤 {r['usuario']} ({r['rol'].upper()})",
-                            value=f"{r['bodega']}",
-                            delta=f"🕒 {pd.to_datetime(r['ultima_conexion']).strftime('%d/%m/%Y %H:%M')}"
-                        )
-                st.markdown("---")
-                st.dataframe(df_ultimos, use_container_width=True)
-        except Exception as e:
-            st.error(f"⚠️ La tabla `log_accesos` no existe o no se puede leer. Error: {e}")
-
+    try:
+      df_ultimos = obtener_df(query_ultimos_accesos)
+      if df_ultimos.empty:
+        st.warning(
+            "Aún no se han registrado inicios de sesión en la tabla de"
+            " auditoría."
+        )
+      else:
+        cols_u = st.columns(min(len(df_ultimos), 4))
+        for idx, r in df_ultimos.iterrows():
+          with cols_u[idx % 4]:
+            st.metric(
+                label=f"👤 {r['usuario']} ({r['rol'].upper()})",
+                value=f"{r['bodega']}",
+                delta=(
+                    "🕒"
+                    f" {pd.to_datetime(r['ultima_conexion']).strftime('%d/%m/%Y %H:%M')}"
+                ),
+            )
         st.markdown("---")
+        st.dataframe(df_ultimos, use_container_width=True)
+    except Exception as e:
+      st.error(
+          f"⚠️ La tabla `log_accesos` no existe o no se puede leer. Error: {e}"
+      )
 
-        st.subheader("📜 Log Histórico Completo de Accesos")
+    st.markdown("---")
+
+    st.subheader("📜 Log Histórico Completo de Accesos")
+    try:
+      df_logs = obtener_df(
+          "SELECT id_log, usuario, rol, bodega, fecha_hora, accion FROM"
+          f" {NOMBRE_BD}.log_accesos ORDER BY fecha_hora DESC"
+      )
+
+      if not df_logs.empty:
+        filtro_user = st.multiselect(
+            "Filtrar por Usuario:", options=df_logs["usuario"].unique()
+        )
+        if filtro_user:
+          df_logs = df_logs[df_logs["usuario"].isin(filtro_user)]
+
+        st.dataframe(df_logs, use_container_width=True)
+      else:
+        st.info("Sin registros en el log.")
+    except Exception as e:
+      st.error(f"Error consultando logs: {e}")
+
+  # CARGA MASIVA EXCEL (EXCLUSIVO SUPERADMIN)
+  elif menu == "CARGA MASIVA (EXCEL)":
+    st.header("📤 Carga Masiva desde Excel / CSV (Módulo SuperAdmin)")
+    st.info(
+        "Permite la importación masiva de datos para el setup inicial. La carga"
+        " de inventario afectará a la bodega activa:"
+        f" **{st.session_state.bodega_activa}**."
+    )
+
+    tab_prod, tab_inv = st.tabs([
+        "1. Cargar Productos (Catálogo Master)",
+        "2. Cargar Inventario Inicial por Casilla",
+    ])
+
+    with tab_prod:
+      st.subheader("1. Importar Catálogo Master de Productos")
+      st.markdown(
+          "Columnas requeridas en la planilla: `sku`, `nombre`,"
+          " `capacidad_por_casilla`"
+      )
+
+      archivo_prods = st.file_uploader(
+          "Selecciona archivo Excel (.xlsx) o CSV",
+          type=["xlsx", "csv"],
+          key="u_prod",
+      )
+
+      if archivo_prods:
         try:
-            df_logs = obtener_df("SELECT id_log, usuario, rol, bodega, fecha_hora, accion FROM log_accesos ORDER BY fecha_hora DESC")
-            
-            if not df_logs.empty:
-                filtro_user = st.multiselect("Filtrar por Usuario:", options=df_logs["usuario"].unique())
-                if filtro_user:
-                    df_logs = df_logs[df_logs["usuario"].isin(filtro_user)]
+          df_up_p = (
+              pd.read_excel(archivo_prods)
+              if archivo_prods.name.endswith(".xlsx")
+              else pd.read_csv(archivo_prods)
+          )
+          st.markdown("**Vista previa de los datos a cargar:**")
+          st.dataframe(df_up_p.head(10), use_container_width=True)
 
-                st.dataframe(df_logs, use_container_width=True)
-            else:
-                st.info("Sin registros en el log.")
-        except Exception as e:
-            st.error(f"Error consultando logs: {e}")
-
-    # CARGA MASIVA EXCEL (EXCLUSIVO SUPERADMIN)
-    elif menu == "CARGA MASIVA (EXCEL)":
-        st.header("📤 Carga Masiva desde Excel / CSV (Módulo SuperAdmin)")
-        st.info(f"Permite la importación masiva de datos para el setup inicial. La carga de inventario afectará a la bodega activa: **{st.session_state.bodega_activa}**.")
-
-        tab_prod, tab_inv = st.tabs(["1. Cargar Productos (Catálogo Master)", "2. Cargar Inventario Inicial por Casilla"])
-
-        with tab_prod:
-            st.subheader("1. Importar Catálogo Master de Productos")
-            st.markdown("Columnas requeridas en la planilla: `sku`, `nombre`, `capacidad_por_casilla`")
-            
-            archivo_prods = st.file_uploader("Selecciona archivo Excel (.xlsx) o CSV", type=["xlsx", "csv"], key="u_prod")
-            
-            if archivo_prods:
-                try:
-                    df_up_p = pd.read_excel(archivo_prods) if archivo_prods.name.endswith(".xlsx") else pd.read_csv(archivo_prods)
-                    st.markdown("**Vista previa de los datos a cargar:**")
-                    st.dataframe(df_up_p.head(10), use_container_width=True)
-
-                    if st.button("🚀 Confirmar Carga de Productos", type="primary"):
-                        conn = obtener_conexion()
-                        cursor = conn.cursor()
-                        cargados = 0
-                        for _, row in df_up_p.iterrows():
-                            cursor.execute("""
-                                INSERT INTO productos (sku, nombre, capacidad_por_casilla) 
+          if st.button("🚀 Confirmar Carga de Productos", type="primary"):
+            conn = obtener_conexion()
+            cursor = conn.cursor()
+            cargados = 0
+            for _, row in df_up_p.iterrows():
+              cursor.execute(
+                  f"""
+                                INSERT INTO {NOMBRE_BD}.productos (sku, nombre, capacidad_por_casilla) 
                                 VALUES (%s, %s, %s)
                                 ON DUPLICATE KEY UPDATE nombre=VALUES(nombre), capacidad_por_casilla=VALUES(capacidad_por_casilla);
-                            """, (str(row["sku"]).strip(), str(row["nombre"]).strip(), int(row["capacidad_por_casilla"])))
-                            cargados += 1
-                        conn.commit()
-                        cursor.close()
-                        conn.close()
-                        st.success(f"🎉 ¡Éxito! Se procesaron {cargados} productos en el catálogo master.")
-                except Exception as e:
-                    st.error(f"❌ Error procesando el archivo: {e}")
+                            """,
+                  (
+                      str(row["sku"]).strip(),
+                      str(row["nombre"]).strip(),
+                      int(row["capacidad_por_casilla"]),
+                  ),
+              )
+              cargados += 1
+            conn.commit()
+            cursor.close()
+            conn.close()
+            st.success(
+                f"🎉 ¡Éxito! Se procesaron {cargados} productos en el catálogo"
+                " master."
+            )
+        except Exception as e:
+          st.error(f"❌ Error procesando el archivo: {e}")
 
-        with tab_inv:
-            st.subheader(f"2. Importar Inventario Inicial en {st.session_state.bodega_activa}")
-            st.markdown("Columnas requeridas en la planilla: `id_ubicacion`, `sku`, `cantidad`")
-            
-            archivo_inv = st.file_uploader("Selecciona archivo Excel (.xlsx) o CSV", type=["xlsx", "csv"], key="u_inv")
-            
-            if archivo_inv:
-                try:
-                    df_up_i = pd.read_excel(archivo_inv) if archivo_inv.name.endswith(".xlsx") else pd.read_csv(archivo_inv)
-                    st.markdown("**Vista previa de las asignaciones de stock:**")
-                    st.dataframe(df_up_i.head(10), use_container_width=True)
+    with tab_inv:
+      st.subheader(
+          f"2. Importar Inventario Inicial en {st.session_state.bodega_activa}"
+      )
+      st.markdown(
+          "Columnas requeridas en la planilla: `id_ubicacion`, `sku`,"
+          " `cantidad`"
+      )
 
-                    if st.button("🚀 Confirmar Carga de Inventario Inicial", type="primary"):
-                        conn = obtener_conexion()
-                        cursor = conn.cursor()
-                        cargados = 0
-                        for _, row in df_up_i.iterrows():
-                            ubi = str(row["id_ubicacion"]).strip()
-                            sku = str(row["sku"]).strip()
-                            cant = int(row["cantidad"])
+      archivo_inv = st.file_uploader(
+          "Selecciona archivo Excel (.xlsx) o CSV",
+          type=["xlsx", "csv"],
+          key="u_inv",
+      )
 
-                            cursor.execute("""
-                                INSERT INTO inventario (id_ubicacion, sku, cantidad) 
+      if archivo_inv:
+        try:
+          df_up_i = (
+              pd.read_excel(archivo_inv)
+              if archivo_inv.name.endswith(".xlsx")
+              else pd.read_csv(archivo_inv)
+          )
+          st.markdown("**Vista previa de las asignaciones de stock:**")
+          st.dataframe(df_up_i.head(10), use_container_width=True)
+
+          if st.button(
+              "🚀 Confirmar Carga de Inventario Inicial", type="primary"
+          ):
+            conn = obtener_conexion()
+            cursor = conn.cursor()
+            cargados = 0
+            for _, row in df_up_i.iterrows():
+              ubi = str(row["id_ubicacion"]).strip()
+              sku = str(row["sku"]).strip()
+              cant = int(row["cantidad"])
+
+              cursor.execute(
+                  f"""
+                                INSERT INTO {NOMBRE_BD}.inventario (id_ubicacion, sku, cantidad) 
                                 VALUES (%s, %s, %s)
                                 ON DUPLICATE KEY UPDATE cantidad=VALUES(cantidad);
-                            """, (ubi, sku, cant))
-                            
-                            cursor.execute("UPDATE ubicaciones SET estado = 'Ocupado' WHERE id_ubicacion = %s AND id_bodega = %s", (ubi, st.session_state.bodega_activa))
-                            
-                            cursor.execute("""
-                                INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad, id_bodega) 
+                            """,
+                  (ubi, sku, cant),
+              )
+
+              cursor.execute(
+                  f"UPDATE {NOMBRE_BD}.ubicaciones SET estado = 'Ocupado' WHERE"
+                  " id_ubicacion = %s AND id_bodega = %s",
+                  (ubi, st.session_state.bodega_activa),
+              )
+
+              cursor.execute(
+                  f"""
+                                INSERT INTO {NOMBRE_BD}.historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad, id_bodega) 
                                 VALUES ('ENTRADA', %s, %s, %s, %s)
-                            """, (sku, ubi, cant, st.session_state.bodega_activa))
-                            cargados += 1
-                        
-                        conn.commit()
-                        cursor.close()
-                        conn.close()
-                        st.success(f"🎉 ¡Éxito! Se asignaron {cargados} casillas de stock en la bodega {st.session_state.bodega_activa}.")
-                except Exception as e:
-                    st.error(f"❌ Error procesando el archivo: {e}")
+                            """,
+                  (sku, ubi, cant, st.session_state.bodega_activa),
+              )
+              cargados += 1
 
-    # QR
-    elif menu == "GENERADOR DE ETIQUETAS QR":
-        st.header("Generador de Etiquetas QR")
-        opcion_qr = st.radio("Tipo de etiqueta", ["Ubicación / Casilla", "Producto / SKU"])
+            conn.commit()
+            cursor.close()
+            conn.close()
+            st.success(
+                f"🎉 ¡Éxito! Se asignaron {cargados} casillas de stock en la"
+                f" bodega {st.session_state.bodega_activa}."
+            )
+        except Exception as e:
+          st.error(f"❌ Error procesando el archivo: {e}")
 
-        if opcion_qr == "Ubicación / Casilla":
-            df_ubis = obtener_df("SELECT id_ubicacion FROM ubicaciones WHERE id_bodega = %s", (st.session_state.bodega_activa,))
-            if not df_ubis.empty:
-                ubi_sel = st.selectbox("Seleccionar Casilla", df_ubis["id_ubicacion"])
+  # QR
+  elif menu == "GENERADOR DE ETIQUETAS QR":
+    st.header("Generador de Etiquetas QR")
+    opcion_qr = st.radio(
+        "Tipo de etiqueta", ["Ubicación / Casilla", "Producto / SKU"]
+    )
 
-                if st.button("Generar QR", type="primary"):
-                    qr = qrcode.QRCode(version=1, box_size=10, border=5)
-                    qr.add_data(f"WMS-UBICACION:{st.session_state.bodega_activa}:{ubi_sel}")
-                    qr.make(fit=True)
-                    img = qr.make_image(fill_color="black", back_color="white")
+    if opcion_qr == "Ubicación / Casilla":
+      df_ubis = obtener_df(
+          f"SELECT id_ubicacion FROM {NOMBRE_BD}.ubicaciones WHERE id_bodega ="
+          " %s",
+          (st.session_state.bodega_activa,),
+      )
+      if not df_ubis.empty:
+        ubi_sel = st.selectbox("Seleccionar Casilla", df_ubis["id_ubicacion"])
 
-                    buf = io.BytesIO()
-                    img.save(buf, format="PNG")
-                    st.image(buf.getvalue(), caption=f"QR Casilla: {ubi_sel} ({st.session_state.bodega_activa})", width=250)
-                    st.download_button(label=f"📥 Descargar QR {ubi_sel}.png", data=buf.getvalue(), file_name=f"QR_{st.session_state.bodega_activa}_{ubi_sel}.png", mime="image/png", type="primary")
-        else:
-            df_prods = obtener_df("SELECT sku, nombre FROM productos")
-            if not df_prods.empty:
-                prod_sel = st.selectbox("Seleccionar Producto", df_prods["sku"] + " - " + df_prods["nombre"])
-                sku_qr = prod_sel.split(" - ")[0]
+        if st.button("Generar QR", type="primary"):
+          qr = qrcode.QRCode(version=1, box_size=10, border=5)
+          qr.add_data(
+              f"WMS-UBICACION:{st.session_state.bodega_activa}:{ubi_sel}"
+          )
+          qr.make(fit=True)
+          img = qr.make_image(fill_color="black", back_color="white")
 
-                if st.button("Generar QR", type="primary"):
-                    qr = qrcode.QRCode(version=1, box_size=10, border=5)
-                    qr.add_data(f"WMS-SKU:{sku_qr}")
-                    qr.make(fit=True)
-                    img = qr.make_image(fill_color="black", back_color="white")
+          buf = io.BytesIO()
+          img.save(buf, format="PNG")
+          st.image(
+              buf.getvalue(),
+              caption=(
+                  f"QR Casilla: {ubi_sel} ({st.session_state.bodega_activa})"
+              ),
+              width=250,
+          )
+          st.download_button(
+              label=f"📥 Descargar QR {ubi_sel}.png",
+              data=buf.getvalue(),
+              file_name=f"QR_{st.session_state.bodega_activa}_{ubi_sel}.png",
+              mime="image/png",
+              type="primary",
+          )
+    else:
+      df_prods = obtener_df(f"SELECT sku, nombre FROM {NOMBRE_BD}.productos")
+      if not df_prods.empty:
+        prod_sel = st.selectbox(
+            "Seleccionar Producto", df_prods["sku"] + " - " + df_prods["nombre"]
+        )
+        sku_qr = prod_sel.split(" - ")[0]
 
-                    buf = io.BytesIO()
-                    img.save(buf, format="PNG")
-                    st.image(buf.getvalue(), caption=f"QR SKU: {sku_qr}", width=250)
-                    st.download_button(label=f"📥 Descargar QR {sku_qr}.png", data=buf.getvalue(), file_name=f"QR_SKU_{sku_qr}.png", mime="image/png", type="primary")
+        if st.button("Generar QR", type="primary"):
+          qr = qrcode.QRCode(version=1, box_size=10, border=5)
+          qr.add_data(f"WMS-SKU:{sku_qr}")
+          qr.make(fit=True)
+          img = qr.make_image(fill_color="black", back_color="white")
+
+          buf = io.BytesIO()
+          img.save(buf, format="PNG")
+          st.image(
+              buf.getvalue(), caption=f"QR SKU: {sku_qr}", width=250
+          )
+          st.download_button(
+              label=f"📥 Descargar QR {sku_qr}.png",
+              data=buf.getvalue(),
+              file_name=f"QR_SKU_{sku_qr}.png",
+              mime="image/png",
+              type="primary",
+          )
