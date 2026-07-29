@@ -287,7 +287,7 @@ def registrar_log_acceso(usuario, rol, bodega, accion="INICIO_SESION"):
 
 
 # ---------------------------------------------------------
-# FUNCIÓN DEL MOTOR DE FORECASTING (CORREGIDO DE RAÍZ)
+# FUNCIÓN DEL MOTOR DE FORECASTING (PROCESAMIENTO LIMPIO)
 # ---------------------------------------------------------
 def ejecutar_job_forecasting(
     id_bodega, dias_historial=60, dias_proyeccion=30, lead_time_dias=7
@@ -1372,9 +1372,8 @@ else:
                 f" Error: {e}"
             )
 
-    # BLOQUE 0: ALERTAS DE FORECASTING Y REABASTECIMIENTO (CONSULTA CORREGIDA)
+    # BLOQUE 0: ALERTAS DE FORECASTING Y REABASTECIMIENTO (SINTAXIS SQL CORREGIDA)
     try:
-      # Calculamos siempre las alertas contra el catálogo maestro de productos
       query_alertas_reabastecimiento = f"""
                 SELECT 
                     p.sku, 
@@ -1385,7 +1384,7 @@ else:
                     CASE 
                         WHEN COALESCE(SUM(i.cantidad), 0) = 0 THEN '🚨 QUIEBRE DE STOCK (0 UNID)'
                         WHEN COALESCE(SUM(i.cantidad), 0) <= COALESCE(f.punto_reorden_sugerido, 1) THEN '⚠️ CRÍTICO (REABASTECER)'
-                        WHEN COALESCE(SUM(i.cantidad), 0) <= INT(COALESCE(f.punto_reorden_sugerido, 1) * 1.5) THEN '⚡ BAJO'
+                        WHEN COALESCE(SUM(i.cantidad), 0) <= (COALESCE(f.punto_reorden_sugerido, 1) * 1.5) THEN '⚡ BAJO'
                         ELSE 'OK'
                     END AS estado_stock
                 FROM {NOMBRE_BD}.productos p
