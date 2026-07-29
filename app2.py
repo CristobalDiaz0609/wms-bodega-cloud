@@ -2,6 +2,7 @@ import io
 import mysql.connector
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import qrcode
 import streamlit as st
 import streamlit.components.v1 as components
@@ -1368,7 +1369,7 @@ else:
                 f" Error: {e}"
             )
 
-    # BLOQUE 0: ALERTAS AISLADAS ESTRICTAMENTE POR BODEGA ACTIVA
+    # BLOQUE 0: ALERTAS DE REABASTECIMIENTO AISLADAS POR BODEGA
     try:
       query_alertas_reabastecimiento = f"""
                 SELECT 
@@ -1384,10 +1385,9 @@ else:
                         ELSE 'OK'
                     END AS estado_stock
                 FROM {NOMBRE_BD}.productos p
-                LEFT JOIN {NOMBRE_BD}.inventario i ON p.sku = i.sku
-                LEFT JOIN {NOMBRE_BD}.ubicaciones u ON i.id_ubicacion = u.id_ubicacion AND u.id_bodega = %s
+                INNER JOIN {NOMBRE_BD}.inventario i ON p.sku = i.sku
+                INNER JOIN {NOMBRE_BD}.ubicaciones u ON i.id_ubicacion = u.id_ubicacion AND u.id_bodega = %s
                 LEFT JOIN {NOMBRE_BD}.forecast_demanda f ON p.sku = f.sku AND f.id_bodega = %s
-                WHERE u.id_ubicacion IS NOT NULL
                 GROUP BY p.sku, p.nombre, f.punto_reorden_sugerido, f.prediccion_prox_30d
                 HAVING stock_actual <= punto_reorden_sugerido
                 ORDER BY stock_actual ASC, punto_reorden_sugerido DESC;
@@ -1427,81 +1427,169 @@ else:
 
     st.markdown("---")
 
-    # NUEVO BLOQUE: GRÁFICO DE LÍNEAS DE PREDICCIÓN DE VENTAS (PRÓXIMOS 2 MESES / 60 DÍAS)
+    # =========================================================================
+    # GRÁFICO DE LÍNEAS AVANZADO: TENDENCIA SEMANAL + PROYECCIÓN 2 MESES (60 DÍAS)
+    # =========================================================================
     st.subheader(
-        "📈 Gráfico de Predicción de Ventas a 2 Meses (Próximos 60 Días)"
+        "📈 Tendencia de Ventas (Semanal) y Proyección Futura (60 Días)"
     )
 
     try:
-      # Obtenemos los SKUs que tienen forecasting calculado en esta bodega
-      df_skus_fc = obtener_df(
+      df_skus_chart = obtener_df(
           f"""
-                SELECT f.sku, p.nombre, f.promedio_diario 
-                FROM {NOMBRE_BD}.forecast_demanda f
-                JOIN {NOMBRE_BD}.productos p ON f.sku = p.sku
-                WHERE f.id_bodega = %s
-                ORDER BY f.sku ASC;
+                SELECT DISTINCT h.sku, p.nombre
+                FROM {NOMBRE_BD}.historial_movimientos h
+                JOIN {NOMBRE_BD}.productos p ON h.sku = p.sku
+                WHERE (h.tipo_movimiento = 'VENTA' OR h.tipo_movimiento = 'DESPACHO') 
+                  AND h.id_bodega = %s
+                ORDER BY h.sku ASC;
             """,
           (st.session_state.bodega_activa,),
       )
 
-      if df_skus_fc.empty:
+      if df_skus_chart.empty:
         st.info(
-            "ℹ️ No hay datos de forecasting calculados. Haz clic en **🔮"
-            " Recalcular Forecasting** arriba."
+            "ℹ️ No hay suficientes movimientos de venta registrados en esta"
+            " bodega para graficar la serie temporal."
         )
       else:
-        opciones_sku_fc = (
-            df_skus_fc["sku"] + " - " + df_skus_fc["nombre"]
+        opciones_chart_sku = (
+            df_skus_chart["sku"] + " - " + df_skus_chart["nombre"]
         ).tolist()
-        sku_fc_sel = st.selectbox(
-            "Seleccionar SKU para proyectar ventas a 2 meses:", opciones_sku_fc
+        sku_chart_sel = st.selectbox(
+            "Seleccionar SKU para análisis de tendencia y proyección:",
+            opciones_chart_sku,
         )
 
-        if sku_fc_sel:
-          sku_clean_fc = sku_fc_sel.split(" - ")[0]
-          prom_dia = float(
-              df_skus_fc[df_skus_fc["sku"] == sku_clean_fc][
-                  "promedio_diario"
-              ].values[0]
+        if sku_chart_sel:
+          sku_clean_chart = sku_chart_sel.split(" - ")[0]
+
+          # 1. HISTÓRICO REAL AGREGADO POR SEMANA (Últimos 90 días)
+          query_historico = f"""
+                        SELECT 
+                            DATE_SUB(fecha_hora, INTERVAL WEEKDAY(fecha_hora) DAY) AS fecha_semana,
+                            SUM(cantidad) AS unidades
+                        FROM {NOMBRE_BD}.historial_movimientos
+                        WHERE (tipo_movimiento = 'VENTA' OR tipo_movimiento = 'DESPACHO')
+                          AND id_bodega = %s 
+                          AND sku = %s
+                          AND fecha_hora >= CURRENT_DATE() - INTERVAL 90 DAY
+                        GROUP BY fecha_semana
+                        ORDER BY fecha_semana ASC;
+                    """
+          df_hist = obtener_df(
+              query_historico,
+              (st.session_state.bodega_activa, sku_clean_chart),
           )
 
-          # Generar proyección acumulada o diaria para 60 días (2 meses)
-          dias_proyeccion = list(range(1, 61))
-          unidades_acumuladas = [
-              round(prom_dia * d, 2) for d in dias_proyeccion
+          # 2. OBTENER PROMEDIO DIARIO Y PUNTO DE REORDEN PARA LA PROYECCIÓN
+          df_fc_val = obtener_df(
+              f"""
+                        SELECT promedio_diario, punto_reorden_sugerido
+                        FROM {NOMBRE_BD}.forecast_demanda
+                        WHERE id_bodega = %s AND sku = %s;
+                    """,
+              (st.session_state.bodega_activa, sku_clean_chart),
+          )
+
+          prom_diario_sku = (
+              float(df_fc_val["promedio_diario"].values[0])
+              if not df_fc_val.empty
+              else 0.5
+          )
+          rop_sku = (
+              int(df_fc_val["punto_reorden_sugerido"].values[0])
+              if not df_fc_val.empty
+              else 2
+          )
+
+          # Construir DataFrames para el gráfico Plotly nativo (Go)
+          fig = go.Figure()
+
+          if not df_hist.empty:
+            df_hist["fecha_semana"] = pd.to_datetime(df_hist["fecha_semana"])
+            # Línea Sólida: Histórico Real
+            fig.add_trace(go.Scatter(
+                x=df_hist["fecha_semana"],
+                y=df_hist["unidades"],
+                mode="lines+markers",
+                name="Histórico Real (Semanal)",
+                line=dict(color="#1F3864", width=3, dash="solid"),
+            ))
+            ultima_fecha_hist = df_hist["fecha_semana"].max()
+            ultimo_valor_hist = df_hist["unidades"].iloc[-1]
+          else:
+            ultima_fecha_hist = pd.Timestamp.today().normalize()
+            ultimo_valor_hist = 0
+
+          # 3. PROYECCIÓN FUTURA A 60 DÍAS (2 MESES) CON BANDA DE INCERTIDUMBRE (±20%)
+          fechas_futuras = [
+              ultima_fecha_hist + pd.Timedelta(days=i) for i in range(0, 61, 7)
+          ]  # Semanal hacia adelante
+          ventas_semanales_est = prom_diario_sku * 7
+
+          y_proyectado = [
+              max(0, round(ultimo_valor_hist + (ventas_semanales_est * (i + 1)), 1))
+              for i in range(len(fechas_futuras))
           ]
+          y_upper = [
+              round(val * 1.2, 1) for val in y_proyectado
+          ]  # Límite superior incertidumbre (+20%)
+          y_lower = [
+              round(max(0, val * 0.8), 1) for val in y_proyectado
+          ]  # Límite inferior incertidumbre (-20%)
 
-          df_proyeccion_60d = pd.DataFrame({
-              "Dia_Proyectado": dias_proyeccion,
-              "Ventas_Acumuladas_Estimadas": unidades_acumuladas,
-          })
+          # Banda Sombreada de Incertidumbre
+          fig.add_trace(go.Scatter(
+              x=fechas_futuras + fechas_futuras[::-1],
+              y=y_upper + y_lower[::-1],
+              fill="toself",
+              fillcolor="rgba(59, 130, 246, 0.15)",
+              line=dict(color="rgba(255,255,255,0)"),
+              showlegend=True,
+              name="Rango de Incertidumbre (±20%)",
+          ))
 
-          fig_fc = px.line(
-              df_proyeccion_60d,
-              x="Dia_Proyectado",
-              y="Ventas_Acumuladas_Estimadas",
-              markers=True,
-              title=(
-                  f"Proyección de Demanda a 60 Días (2 Meses) - SKU:"
-                  f" {sku_clean_fc} (Promedio: {prom_dia} un/día)"
-              ),
-              labels={
-                  "Dia_Proyectado": "Días Futuros",
-                  "Ventas_Acumuladas_Estimadas": (
-                      "Unidades Acumuladas Proyectadas"
-                  ),
-              },
-              color_discrete_sequence=["#2D4B7C"],
-          )
-          fig_fc.update_layout(
-              height=400,
+          # Línea Punteada: Estimado Futuro a 60 días
+          fig.add_trace(go.Scatter(
+              x=fechas_futuras,
+              y=y_proyectado,
+              mode="lines+markers",
+              name="Proyección (Próximos 60 Días)",
+              line=dict(color="#3B82F6", width=3, dash="dot"),
+          ))
+
+          # 4. LÍNEA HORIZONTAL PUNTEADA: PUNTO DE REORDEN (ROJO/NARANJA)
+          if not df_hist.empty:
+            x_min_line = df_hist["fecha_semana"].min()
+          else:
+            x_min_line = pd.Timestamp.today()
+          x_max_line = fechas_futuras[-1]
+
+          fig.add_trace(go.Scatter(
+              x=[x_min_line, x_max_line],
+              y=[rop_sku, rop_sku],
+              mode="lines",
+              name=f"Punto de Reorden (ROP = {rop_sku})",
+              line=dict(color="#EF4444", width=2, dash="dash"),
+          ))
+
+          # Diseño general del gráfico gerencial
+          fig.update_layout(
+              title=f"Tendencia y Proyección a 2 Meses - SKU: {sku_clean_chart}",
+              xaxis_title="Eje Temporal (Agrupado por Semana)",
+              yaxis_title="Unidades Vendidas",
+              height=450,
               paper_bgcolor="rgba(0,0,0,0)",
               plot_bgcolor="rgba(0,0,0,0)",
+              hovermode="x unified",
+              legend=dict(
+                  orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
+              ),
           )
-          st.plotly_chart(fig_fc, use_container_width=True)
+          st.plotly_chart(fig, use_container_width=True)
     except Exception as e:
-      st.warning(f"No se pudo cargar el gráfico de predicción: {e}")
+      st.warning(f"Error generando el gráfico de tendencia: {e}")
 
     st.markdown("---")
 
