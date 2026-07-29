@@ -1485,7 +1485,7 @@ else:
           # Convertir YEARWEEK (ej. 202625) a fecha real en Pandas limpiamente
           if not df_hist.empty:
             df_hist["fecha_semana"] = pd.to_datetime(
-                df_hist["yw"].astype(str) + "1", format="%Y%V%u"
+                df_hist["yw"].astype(str) + "1", format="%G%V%u"
             )
           else:
             df_hist["fecha_semana"] = pd.Series(dtype="datetime64[ns]")
