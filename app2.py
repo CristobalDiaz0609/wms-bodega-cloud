@@ -278,18 +278,13 @@ def registrar_log_acceso(usuario, rol, bodega, accion="INICIO_SESION"):
         pass
 
 # ---------------------------------------------------------
-# FUNCIÓN DEL MOTOR DE FORECASTING DE DEMANDA (JOB HEAVY)
+# FUNCIÓN DEL MOTOR DE FORECASTING (REVISADO Y CORREGIDO)
 # ---------------------------------------------------------
 def ejecutar_job_forecasting(id_bodega, dias_historial=60, dias_proyeccion=30, lead_time_dias=7):
-    """
-    Calcula el promedio diario de consumo por SKU en los últimos X días,
-    proyecta la demanda para los próximos 30 días y calcula el punto de reorden.
-    Escribe el resultado en la tabla 'forecast_demanda'.
-    """
     conn = obtener_conexion()
     cursor = conn.cursor()
 
-    # 1. Obtener consumo acumulado histórico de cada SKU en la bodega activa
+    # 1. Consumo histórico
     query_consumo = """
         SELECT sku, COALESCE(SUM(cantidad), 0) AS total_despachado
         FROM historial_movimientos
@@ -301,10 +296,10 @@ def ejecutar_job_forecasting(id_bodega, dias_historial=60, dias_proyeccion=30, l
     df_consumo = pd.read_sql(query_consumo, conn, params=(id_bodega, dias_historial))
     dict_consumo = dict(zip(df_consumo["sku"], df_consumo["total_despachado"])) if not df_consumo.empty else {}
 
-    # 2. Obtener lista completa de productos registrados
+    # 2. Catálogo de productos
     df_prods = pd.read_sql("SELECT sku FROM productos", conn)
 
-    # 3. Obtener stock actual por SKU
+    # 3. Stock actual real agrupado por bodega
     query_stock = """
         SELECT i.sku, COALESCE(SUM(i.cantidad), 0) AS stock_actual
         FROM inventario i
@@ -315,25 +310,26 @@ def ejecutar_job_forecasting(id_bodega, dias_historial=60, dias_proyeccion=30, l
     df_stock = pd.read_sql(query_stock, conn, params=(id_bodega,))
     dict_stock = dict(zip(df_stock["sku"], df_stock["stock_actual"])) if not df_stock.empty else {}
 
-    # 4. Recorrer SKUs y calcular métricas de forecasting
     procesados = 0
     for _, row in df_prods.iterrows():
         sku = row["sku"]
         total_desp = dict_consumo.get(sku, 0)
         stock_act = dict_stock.get(sku, 0)
 
+        # Cálculo de promedio diario
         prom_diario = round(total_desp / float(dias_historial), 2)
         prediccion_30d = int(round(prom_diario * dias_proyeccion))
         
-        # Punto de reorden = Demanda durante tiempo de entrega + Stock de seguridad (20%)
+        # Punto de reorden = (Demanda diaria × Lead time) + Stock de seguridad (20%)
         punto_reorden = int(round((prom_diario * lead_time_dias) * 1.2))
 
+        # Clasificación según la condición solicitada: stock_actual vs. punto_reorden_sugerido
         if stock_act <= punto_reorden and punto_reorden > 0:
-            estado_stock = "⚠️ CRÍTICO (REABASTECER)"
-        elif stock_act <= punto_reorden * 1.5 and punto_reorden > 0:
-            estado_stock = "⚡ ADVERTENCIA"
+            estado_stock = "CRÍTICO (REABASTECER)"
+        elif stock_act <= int(punto_reorden * 1.5) and punto_reorden > 0:
+            estado_stock = "BAJO"
         else:
-            estado_stock = "✅ NORMAL"
+            estado_stock = "OK"
 
         cursor.execute("""
             INSERT INTO forecast_demanda 
@@ -381,7 +377,7 @@ if "distancia_total_persistente" not in st.session_state:
 if "operaciones_pendientes_picking" not in st.session_state:
     st.session_state.operaciones_pendientes_picking = []
 
-# AUTO-LOGIN SI SE PERDIÓ LA CONEXIÓN WEBSOCKET PERO SIGUE EL USUARIO EN LA URL
+# AUTO-LOGIN VIA URL
 if not st.session_state.autenticado and "user" in st.query_params:
     user_url = st.query_params["user"]
     try:
@@ -424,7 +420,6 @@ def login():
                 else:
                     st.session_state.bodega_activa = "BOD-01"
 
-                # PERSISTIR SESIÓN EN LA URL PARA EVITAR DESCONEXIÓN POR INACTIVIDAD
                 st.query_params["user"] = user_data["usuario"]
 
                 registrar_log_acceso(
@@ -439,7 +434,7 @@ def login():
             else:
                 st.sidebar.error("❌ Usuario o contraseña incorrectos.")
         except Exception as e:
-            st.sidebar.error(f"❌ Error al consultar BD. Verifica la tabla `usuarios`. Error: {e}")
+            st.sidebar.error(f"❌ Error al consultar BD. Error: {e}")
 
 
 def logout():
@@ -450,9 +445,7 @@ def logout():
             bodega=st.session_state.bodega_activa,
             accion="CIERRE_SESION"
         )
-    # LIMPIAR PARÁMETROS EN LA URL EN LOGOUT MANUAL
     st.query_params.clear()
-
     st.session_state.autenticado = False
     st.session_state.usuario_actual = ""
     st.session_state.rol_actual = ""
@@ -475,7 +468,6 @@ else:
     def cambiar_bodega_callback():
         st.session_state.bodega_activa = st.session_state.selector_bodega_temp
 
-    # BARRA LATERAL CON BADGES CORREGIDOS
     if st.session_state.rol_actual == "superadmin":
         role_class = "role-badge-superadmin"
         role_text = "⚡ SuperAdmin"
@@ -520,7 +512,6 @@ else:
         st.session_state.distancia_total_persistente = None
         st.session_state.operaciones_pendientes_picking = []
 
-    # CONFIRMAR PICKING
     def confirmar_picking_callback():
         if st.session_state.operaciones_pendientes_picking:
             try:
@@ -546,11 +537,10 @@ else:
                 st.session_state.hoja_ruta_persistente = None
                 st.session_state.distancia_total_persistente = None
                 st.session_state.operaciones_pendientes_picking = []
-                st.session_state.mensaje_exito_picking = "🎉 ¡Venta/Picking confirmado con éxito! Registrado en la base de datos."
+                st.session_state.mensaje_exito_picking = "🎉 ¡Venta/Picking confirmado con éxito!"
             except Exception as e:
                 st.session_state.mensaje_exito_picking = f"❌ Error: {e}"
 
-    # TITULO LIMPIO CON BADGE DE BODEGA SEPARADO
     bodega_nombre_header = dict_bodegas.get(st.session_state.bodega_activa, st.session_state.bodega_activa)
     st.markdown(
         f"<h1 style='display: inline-block;'>📦 WMS 2D</h1> "
@@ -559,7 +549,6 @@ else:
     )
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # PERMISOS DE MÓDULOS SEGÚN ROL
     if st.session_state.rol_actual == "superadmin":
         modulos_disponibles = [
             "MAPA 2D & ESTADO",
@@ -646,10 +635,10 @@ else:
             df_mapa_plot = df_mapa.copy()
 
             color_map = {
-                "Vacío / Libre": "#10B981", # Verde
-                "Ocupado": "#EF4444",       # Rojo
-                "LLENA": "#8B5CF6",         # Morado
-                "Inhabilitado": "#94A3B8",  # Gris
+                "Vacío / Libre": "#10B981",
+                "Ocupado": "#EF4444",
+                "LLENA": "#8B5CF6",
+                "Inhabilitado": "#94A3B8",
                 "Otro / Sin Coincidencia": "#E2E8F0"
             }
 
@@ -1007,7 +996,6 @@ else:
     elif menu == "DASHBOARD & KPIS":
         st.header(f"Analítica de Operación y Reportes - {st.session_state.bodega_activa}")
 
-        # BOTÓN PARA EJECUTAR EL RECALCULO DE FORECASTING
         col_dash_title, col_dash_btn = st.columns([3, 1])
         with col_dash_btn:
             if st.button("🔮 Recalcular Forecasting", type="primary", use_container_width=True):
@@ -1030,16 +1018,15 @@ else:
                 LEFT JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion AND u.id_bodega = f.id_bodega
                 WHERE f.id_bodega = %s
                 GROUP BY f.sku, p.nombre, f.promedio_diario, f.prediccion_prox_30d, f.punto_reorden_sugerido, f.estado_stock, f.fecha_calculo
+                HAVING stock_actual <= f.punto_reorden_sugerido AND f.punto_reorden_sugerido > 0
                 ORDER BY f.punto_reorden_sugerido DESC;
             """, (st.session_state.bodega_activa,))
 
             if not df_forecast.empty:
-                df_criticos = df_forecast[df_forecast["estado_stock"] == "⚠️ CRÍTICO (REABASTECER)"]
-                if not df_criticos.empty:
-                    st.error(f"🚨 **ALERTAS DE REABASTECIMIENTO:** Se detectaron {len(df_criticos)} SKU(s) por debajo de su punto de reorden en {st.session_state.bodega_activa}.")
-                    st.dataframe(df_criticos[["sku", "nombre", "stock_actual", "punto_reorden_sugerido", "prediccion_prox_30d", "estado_stock"]], use_container_width=True)
-                else:
-                    st.success("✅ **SISTEMA DE DEMANDA:** Todos los SKUs cuentan con stock suficiente según el forecasting.")
+                st.error(f"🚨 **ALERTAS DE REABASTECIMIENTO:** Se detectaron {len(df_forecast)} SKU(s) cuyo stock actual es menor o igual al punto de reorden sugerido.")
+                st.dataframe(df_forecast[["sku", "nombre", "stock_actual", "punto_reorden_sugerido", "prediccion_prox_30d", "estado_stock"]], use_container_width=True)
+            else:
+                st.success("✅ **SISTEMA DE DEMANDA:** Todos los SKUs cuentan con stock suficiente según el punto de reorden sugerido.")
         except Exception:
             st.info("ℹ️ Haz clic en **🔮 Recalcular Forecasting** para generar las predicciones de demanda iniciales.")
 
@@ -1320,7 +1307,7 @@ else:
                 st.markdown("---")
                 st.dataframe(df_ultimos, use_container_width=True)
         except Exception as e:
-            st.error(f"⚠️ La tabla `log_accesos` no existe o no se puede leer. Asegúrate de haber ejecutado el SQL de creación. Error: {e}")
+            st.error(f"⚠️ La tabla `log_accesos` no existe o no se puede leer. Error: {e}")
 
         st.markdown("---")
 
