@@ -1428,7 +1428,7 @@ else:
     st.markdown("---")
 
     # =========================================================================
-    # GRÁFICO DE LÍNEAS GERENCIAL: HISTÓRICO SEMANAL + PROYECCIÓN PLANA (60 DÍAS)
+    # GRÁFICO DE LÍNEAS GERENCIAL: HISTÓRICO SEMANAL LIMPIO + PROYECCIÓN PLANA (60 DÍAS)
     # =========================================================================
     st.subheader(
         "📈 Tendencia Semanal de Ventas y Proyección Plana (Próximos 60 Días)"
@@ -1464,7 +1464,7 @@ else:
         if sku_chart_sel:
           sku_clean_chart = sku_chart_sel.split(" - ")[0]
 
-          # 1. HISTÓRICO REAL AGREGADO ESTRICTAMENTE POR SEMANA (YEARWEEK) Y FILTRADO POR BODEGA
+          # 1. HISTÓRICO REAL AGREGADO ESTRICTAMENTE POR SEMANA (YEARWEEK CON GROUP BY CORREGIDO)
           query_historico = f"""
                         SELECT 
                             STR_TO_DATE(CONCAT(YEARWEEK(fecha_hora, 1), ' Monday'), '%X%V %W') AS fecha_semana,
