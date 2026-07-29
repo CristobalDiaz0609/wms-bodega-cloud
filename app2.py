@@ -287,7 +287,7 @@ def registrar_log_acceso(usuario, rol, bodega, accion="INICIO_SESION"):
 
 
 # ---------------------------------------------------------
-# FUNCIÓN DEL MOTOR DE FORECASTING (max(1, ...) APLICADO)
+# FUNCIÓN DEL MOTOR DE FORECASTING (CORREGIDO DE RAÍZ)
 # ---------------------------------------------------------
 def ejecutar_job_forecasting(
     id_bodega, dias_historial=60, dias_proyeccion=30, lead_time_dias=7
@@ -313,7 +313,7 @@ def ejecutar_job_forecasting(
       else {}
   )
 
-  # 2. Catálogo de productos
+  # 2. Catálogo completo de productos
   df_prods = pd.read_sql(f"SELECT sku FROM {NOMBRE_BD}.productos", conn)
 
   # 3. Stock actual real agrupado por bodega
@@ -337,17 +337,12 @@ def ejecutar_job_forecasting(
     total_desp = dict_consumo.get(sku, 0)
     stock_act = dict_stock.get(sku, 0)
 
-    # Promedio diario y proyección a 30 días
     prom_diario = round(total_desp / float(dias_historial), 2)
     prediccion_30d = int(round(prom_diario * dias_proyeccion))
 
-    # CÁLCULO DEL PUNTO DE REORDEN
     punto_reorden_calc = int(round((prom_diario * lead_time_dias) * 1.2))
-
-    # FORZAMOS QUE EL PUNTO DE REORDEN SEA MÍNIMO 1 (MÁXIMO ENTRE EL CÁLCULO Y 1)
     punto_reorden = max(1, punto_reorden_calc)
 
-    # Clasificación de estado según el punto_reorden (mínimo 1)
     if stock_act == 0:
       estado_stock = "🚨 QUIEBRE DE STOCK (0 UNID)"
     elif stock_act <= punto_reorden:
@@ -618,7 +613,7 @@ else:
         cursor.close()
         conn.close()
 
-        # RE-EJECUTAR AUTOMÁTICAMENTE FORECASTING TRAS VENTA
+        # RE-EJECUTAR AUTOMÁTICAMENTE FORECASTING TRAS LA VENTA
         try:
           ejecutar_job_forecasting(st.session_state.bodega_activa)
         except Exception:
@@ -1178,7 +1173,7 @@ else:
             FROM {NOMBRE_BD}.inventario i
             JOIN {NOMBRE_BD}.ubicaciones u ON i.id_ubicacion = u.id_ubicacion
             JOIN {NOMBRE_BD}.productos p ON i.sku = p.sku
-            WHERE u.id_bodega = %s
+            WHERE u.id_bodega = %s AND i.cantidad > 0
             GROUP BY i.sku, p.nombre
         """,
         (st.session_state.bodega_activa,),
@@ -1377,22 +1372,33 @@ else:
                 f" Error: {e}"
             )
 
-    # BLOQUE 0: ALERTAS DE FORECASTING Y REABASTECIMIENTO
+    # BLOQUE 0: ALERTAS DE FORECASTING Y REABASTECIMIENTO (CONSULTA CORREGIDA)
     try:
+      # Calculamos siempre las alertas contra el catálogo maestro de productos
+      query_alertas_reabastecimiento = f"""
+                SELECT 
+                    p.sku, 
+                    p.nombre, 
+                    COALESCE(SUM(i.cantidad), 0) AS stock_actual,
+                    COALESCE(f.punto_reorden_sugerido, 1) AS punto_reorden_sugerido,
+                    COALESCE(f.prediccion_prox_30d, 0) AS prediccion_prox_30d,
+                    CASE 
+                        WHEN COALESCE(SUM(i.cantidad), 0) = 0 THEN '🚨 QUIEBRE DE STOCK (0 UNID)'
+                        WHEN COALESCE(SUM(i.cantidad), 0) <= COALESCE(f.punto_reorden_sugerido, 1) THEN '⚠️ CRÍTICO (REABASTECER)'
+                        WHEN COALESCE(SUM(i.cantidad), 0) <= INT(COALESCE(f.punto_reorden_sugerido, 1) * 1.5) THEN '⚡ BAJO'
+                        ELSE 'OK'
+                    END AS estado_stock
+                FROM {NOMBRE_BD}.productos p
+                LEFT JOIN {NOMBRE_BD}.inventario i ON p.sku = i.sku
+                LEFT JOIN {NOMBRE_BD}.ubicaciones u ON i.id_ubicacion = u.id_ubicacion AND u.id_bodega = %s
+                LEFT JOIN {NOMBRE_BD}.forecast_demanda f ON p.sku = f.sku AND f.id_bodega = %s
+                GROUP BY p.sku, p.nombre, f.punto_reorden_sugerido, f.prediccion_prox_30d
+                HAVING stock_actual <= punto_reorden_sugerido
+                ORDER BY stock_actual ASC, punto_reorden_sugerido DESC;
+            """
       df_forecast = obtener_df(
-          f"""
-                SELECT f.sku, p.nombre, f.promedio_diario, f.prediccion_prox_30d, f.punto_reorden_sugerido, f.estado_stock, f.fecha_calculo,
-                       COALESCE(SUM(i.cantidad), 0) AS stock_actual
-                FROM {NOMBRE_BD}.forecast_demanda f
-                JOIN {NOMBRE_BD}.productos p ON f.sku = p.sku
-                LEFT JOIN {NOMBRE_BD}.inventario i ON f.sku = i.sku
-                LEFT JOIN {NOMBRE_BD}.ubicaciones u ON i.id_ubicacion = u.id_ubicacion AND u.id_bodega = f.id_bodega
-                WHERE f.id_bodega = %s
-                GROUP BY f.sku, p.nombre, f.promedio_diario, f.prediccion_prox_30d, f.punto_reorden_sugerido, f.estado_stock, f.fecha_calculo
-                HAVING stock_actual <= f.punto_reorden_sugerido
-                ORDER BY stock_actual ASC, f.punto_reorden_sugerido DESC;
-            """,
-          (st.session_state.bodega_activa,),
+          query_alertas_reabastecimiento,
+          (st.session_state.bodega_activa, st.session_state.bodega_activa),
       )
 
       if not df_forecast.empty:
@@ -1417,10 +1423,10 @@ else:
             "✅ **SISTEMA DE DEMANDA:** Todos los SKUs cuentan con stock"
             " suficiente según el punto de reorden sugerido."
         )
-    except Exception:
+    except Exception as e:
       st.info(
           "ℹ️ Haz clic en **🔮 Recalcular Forecasting** para generar las"
-          " predicciones de demanda iniciales."
+          f" predicciones de demanda iniciales. (Detalle: {e})"
       )
 
     st.markdown("---")
