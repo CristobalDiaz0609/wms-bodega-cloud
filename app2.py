@@ -287,7 +287,7 @@ def registrar_log_acceso(usuario, rol, bodega, accion="INICIO_SESION"):
 
 
 # ---------------------------------------------------------
-# FUNCIÓN DEL MOTOR DE FORECASTING (PROCESAMIENTO LIMPIO)
+# FUNCIÓN DEL MOTOR DE FORECASTING (AISLADO POR BODEGA)
 # ---------------------------------------------------------
 def ejecutar_job_forecasting(
     id_bodega, dias_historial=60, dias_proyeccion=30, lead_time_dias=7
@@ -295,7 +295,7 @@ def ejecutar_job_forecasting(
   conn = obtener_conexion()
   cursor = conn.cursor()
 
-  # 1. Consumo histórico
+  # 1. Consumo histórico estrictamente de la bodega seleccionada
   query_consumo = f"""
         SELECT sku, COALESCE(SUM(cantidad), 0) AS total_despachado
         FROM {NOMBRE_BD}.historial_movimientos
@@ -316,7 +316,7 @@ def ejecutar_job_forecasting(
   # 2. Catálogo completo de productos
   df_prods = pd.read_sql(f"SELECT sku FROM {NOMBRE_BD}.productos", conn)
 
-  # 3. Stock actual real agrupado por bodega
+  # 3. Stock actual estrictamente de la bodega seleccionada
   query_stock = f"""
         SELECT i.sku, COALESCE(SUM(i.cantidad), 0) AS stock_actual
         FROM {NOMBRE_BD}.inventario i
@@ -866,7 +866,7 @@ else:
     )
 
     if df_prods.empty:
-      st.warning("Asegúrate de tener productos registrados en el sistema.")
+      st.warning("Asegúrate de haber registrado productos en el sistema.")
     else:
       sku_sel = st.selectbox(
           "Seleccionar Producto (SKU)",
@@ -1372,7 +1372,7 @@ else:
                 f" Error: {e}"
             )
 
-    # BLOQUE 0: ALERTAS DE FORECASTING Y REABASTECIMIENTO (SINTAXIS SQL CORREGIDA)
+    # BLOQUE 0: ALERTAS DE REABASTECIMIENTO AISLADAS POR BODEGA (CORREGIDO EL BUG DEL JOIN)
     try:
       query_alertas_reabastecimiento = f"""
                 SELECT 
@@ -1391,6 +1391,7 @@ else:
                 LEFT JOIN {NOMBRE_BD}.inventario i ON p.sku = i.sku
                 LEFT JOIN {NOMBRE_BD}.ubicaciones u ON i.id_ubicacion = u.id_ubicacion AND u.id_bodega = %s
                 LEFT JOIN {NOMBRE_BD}.forecast_demanda f ON p.sku = f.sku AND f.id_bodega = %s
+                WHERE u.id_ubicacion IS NOT NULL OR i.id_inventario IS NULL
                 GROUP BY p.sku, p.nombre, f.punto_reorden_sugerido, f.prediccion_prox_30d
                 HAVING stock_actual <= punto_reorden_sugerido
                 ORDER BY stock_actual ASC, punto_reorden_sugerido DESC;
@@ -1404,7 +1405,7 @@ else:
         st.error(
             f"🚨 **ALERTAS DE REABASTECIMIENTO:** Se detectaron {len(df_forecast)}"
             " SKU(s) cuya cantidad en stock está en o por debajo del punto de"
-            " reorden."
+            f" reorden en la bodega **{st.session_state.bodega_activa}**."
         )
         st.dataframe(
             df_forecast[[
@@ -1420,7 +1421,7 @@ else:
       else:
         st.success(
             "✅ **SISTEMA DE DEMANDA:** Todos los SKUs cuentan con stock"
-            " suficiente según el punto de reorden sugerido."
+            f" suficiente en la bodega **{st.session_state.bodega_activa}**."
         )
     except Exception as e:
       st.info(
