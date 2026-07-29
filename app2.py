@@ -288,7 +288,7 @@ def registrar_log_acceso(usuario, rol, bodega, accion="INICIO_SESION"):
 
 
 # ---------------------------------------------------------
-# FUNCIÓN DEL MOTOR DE FORECASTING
+# FUNCIÓN DEL MOTOR DE FORECASTING (PROMEDIO SIMPLE)
 # ---------------------------------------------------------
 def ejecutar_job_forecasting(
     id_bodega, dias_historial=60, dias_proyeccion=30, lead_time_dias=7
@@ -1464,17 +1464,17 @@ else:
         if sku_chart_sel:
           sku_clean_chart = sku_chart_sel.split(" - ")[0]
 
-          # 1. HISTÓRICO REAL AGREGADO POR SEMANA (Últimos 90 días, ordenado cronológicamente)
+          # 1. HISTÓRICO REAL AGREGADO ESTRICTAMENTE POR SEMANA (YEARWEEK) Y FILTRADO POR BODEGA
           query_historico = f"""
                         SELECT 
-                            DATE_SUB(fecha_hora, INTERVAL WEEKDAY(fecha_hora) DAY) AS fecha_semana,
+                            STR_TO_DATE(CONCAT(YEARWEEK(fecha_hora, 1), ' Monday'), '%X%V %W') AS fecha_semana,
                             SUM(cantidad) AS unidades
                         FROM {NOMBRE_BD}.historial_movimientos
                         WHERE (tipo_movimiento = 'VENTA' OR tipo_movimiento = 'DESPACHO')
                           AND id_bodega = %s 
                           AND sku = %s
                           AND fecha_hora >= CURRENT_DATE() - INTERVAL 90 DAY
-                        GROUP BY fecha_semana
+                        GROUP BY YEARWEEK(fecha_hora, 1)
                         ORDER BY fecha_semana ASC;
                     """
           df_hist = obtener_df(
@@ -1482,7 +1482,7 @@ else:
               (st.session_state.bodega_activa, sku_clean_chart),
           )
 
-          # 2. OBTENER PROMEDIO DIARIO Y PUNTO DE REORDEN
+          # 2. OBTENER PROMEDIO DIARIO Y PUNTO DE REORDEN ESTRICTAMENTE DE LA BODEGA ACTIVA
           df_fc_val = obtener_df(
               f"""
                         SELECT promedio_diario, punto_reorden_sugerido
@@ -1507,7 +1507,7 @@ else:
 
           if not df_hist.empty:
             df_hist["fecha_semana"] = pd.to_datetime(df_hist["fecha_semana"])
-            # Línea Sólida: Histórico Real Semanal
+            # Línea Sólida: Histórico Real Semanal Ordenado
             fig.add_trace(go.Scatter(
                 x=df_hist["fecha_semana"],
                 y=df_hist["unidades"],
@@ -1516,15 +1516,13 @@ else:
                 line=dict(color="#1F3864", width=3, dash="solid"),
             ))
             ultima_fecha_hist = df_hist["fecha_semana"].max()
-            ultimo_valor_hist = df_hist["unidades"].iloc[-1]
           else:
             ultima_fecha_hist = pd.Timestamp.today().normalize()
-            ultimo_valor_hist = 0
 
-          # 3. PROYECCIÓN PLANA (Basada en el promedio diario real escalado a semanas, sin pendientes locas)
+          # 3. PROYECCIÓN PLANA CONSTANTE (Basada en el promedio diario real escalado a semana)
           fechas_futuras = [
               ultima_fecha_hist + pd.Timedelta(days=i) for i in range(7, 61, 7)
-          ]  # Semanal hacia adelante (aprox 2 meses)
+          ]  # Semanal hacia adelante (60 días)
           venta_semanal_constante = round(prom_diario_sku * 7, 2)
 
           y_proyectado = [
@@ -1576,10 +1574,10 @@ else:
           # Layout del Gráfico Gerencial
           fig.update_layout(
               title=(
-                  f"Tendencia Semanal y Proyección Plana a 2 Meses - SKU:"
+                  f"Tendencia Semanal Limpia y Proyección Plana a 2 Meses - SKU:"
                   f" {sku_clean_chart}"
               ),
-              xaxis_title="Eje Temporal (Agrupado por Semana)",
+              xaxis_title="Eje Temporal (Agrupado por Semana - Lunes a Domingo)",
               yaxis_title="Unidades Vendidas por Semana",
               height=450,
               paper_bgcolor="rgba(0,0,0,0)",
