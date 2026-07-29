@@ -444,6 +444,9 @@ else:
         st.session_state.distancia_total_persistente = None
         st.session_state.operaciones_pendientes_picking = []
 
+    # ---------------------------------------------------------
+    # CONFIRMAR PICKING ACTUALIZADO (REGISTRA VENTA Y NO BORRA)
+    # ---------------------------------------------------------
     def confirmar_picking_callback():
         if st.session_state.operaciones_pendientes_picking:
             try:
@@ -451,14 +454,16 @@ else:
                 cursor = conn.cursor()
 
                 for op in st.session_state.operaciones_pendientes_picking:
+                    # En lugar de DELETE, actualizamos la cantidad a 0 y liberamos la casilla en el mapa
                     if op["tipo"] == "DELETE":
-                        cursor.execute("DELETE FROM inventario WHERE id_inventario = %s", (op["id_inventario"],))
+                        cursor.execute("UPDATE inventario SET cantidad = 0 WHERE id_inventario = %s", (op["id_inventario"],))
                         cursor.execute("UPDATE ubicaciones SET estado = 'Libre' WHERE id_ubicacion = %s AND id_bodega = %s", (op["id_ubicacion"], st.session_state.bodega_activa))
                     elif op["tipo"] == "UPDATE":
                         cursor.execute("UPDATE inventario SET cantidad = %s WHERE id_inventario = %s", (op["nueva_cantidad"], op["id_inventario"]))
 
+                    # Se registra en el historial como 'VENTA'
                     cursor.execute(
-                        "INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad, id_bodega) VALUES ('DESPACHO', %s, %s, %s, %s)",
+                        "INSERT INTO historial_movimientos (tipo_movimiento, sku, id_ubicacion, cantidad, id_bodega) VALUES ('VENTA', %s, %s, %s, %s)",
                         (op["sku"], op["id_ubicacion"], op["cantidad"], st.session_state.bodega_activa)
                     )
 
@@ -469,7 +474,7 @@ else:
                 st.session_state.hoja_ruta_persistente = None
                 st.session_state.distancia_total_persistente = None
                 st.session_state.operaciones_pendientes_picking = []
-                st.session_state.mensaje_exito_picking = "🎉 ¡Picking confirmado con éxito! El inventario ha sido actualizado."
+                st.session_state.mensaje_exito_picking = "🎉 ¡Venta/Picking confirmado con éxito! Registrado como VENTA en la base de datos."
             except Exception as e:
                 st.session_state.mensaje_exito_picking = f"❌ Error: {e}"
 
@@ -855,7 +860,7 @@ else:
                             SELECT i.id_inventario, i.id_ubicacion, i.cantidad, u.coord_x, u.coord_y
                             FROM inventario i
                             JOIN ubicaciones u ON i.id_ubicacion = u.id_ubicacion
-                            WHERE i.sku = %s AND u.id_bodega = %s
+                            WHERE i.sku = %s AND u.id_bodega = %s AND i.cantidad > 0
                             ORDER BY i.cantidad ASC
                         """, (sku_clean, st.session_state.bodega_activa))
 
@@ -924,7 +929,7 @@ else:
                 with col_btn1:
                     st.button("❌ Cancelar Ruta", use_container_width=True, on_click=cancelar_picking_callback)
                 with col_btn2:
-                    st.button("✅ Confirmar y Finalizar Picking", type="primary", use_container_width=True, on_click=confirmar_picking_callback)
+                    st.button("✅ Confirmar y Finalizar Venta", type="primary", use_container_width=True, on_click=confirmar_picking_callback)
 
     # DASHBOARD
     elif menu == "DASHBOARD & KPIS":
@@ -961,12 +966,12 @@ else:
         st.markdown("---")
 
         # BLOQUE 2: RENDIMIENTO DE PICKING / DESPACHOS
-        st.subheader("🛒 Rendimiento de Picking / Despachos")
+        st.subheader("🛒 Rendimiento de Ventas / Despachos")
 
         picking_mes_actual = obtener_df("""
             SELECT COALESCE(SUM(cantidad), 0) as t 
             FROM historial_movimientos 
-            WHERE tipo_movimiento = 'DESPACHO' AND id_bodega = %s 
+            WHERE (tipo_movimiento = 'VENTA' OR tipo_movimiento = 'DESPACHO') AND id_bodega = %s 
               AND MONTH(fecha_hora) = MONTH(CURRENT_DATE()) 
               AND YEAR(fecha_hora) = YEAR(CURRENT_DATE())
         """, (st.session_state.bodega_activa,))["t"].values[0]
@@ -974,7 +979,7 @@ else:
         picking_mes_pasado = obtener_df("""
             SELECT COALESCE(SUM(cantidad), 0) as t 
             FROM historial_movimientos 
-            WHERE tipo_movimiento = 'DESPACHO' AND id_bodega = %s 
+            WHERE (tipo_movimiento = 'VENTA' OR tipo_movimiento = 'DESPACHO') AND id_bodega = %s 
               AND MONTH(fecha_hora) = MONTH(CURRENT_DATE() - INTERVAL 1 MONTH) 
               AND YEAR(fecha_hora) = YEAR(CURRENT_DATE() - INTERVAL 1 MONTH)
         """, (st.session_state.bodega_activa,))["t"].values[0]
@@ -983,20 +988,20 @@ else:
         delta_str = f"↑ +{diff_picking:.0f} Unid. vs Mes Pasado" if diff_picking >= 0 else f"↓ {diff_picking:.0f} Unid. vs Mes Pasado"
 
         p_col1, p_col2, p_col3 = st.columns(3)
-        p_col1.metric("Picking Mes Actual", f"{picking_mes_actual:.0f} Unidades", delta_str)
-        p_col2.metric("Picking Mes Pasado", f"{picking_mes_pasado:.0f} Unidades")
+        p_col1.metric("Ventas Mes Actual", f"{picking_mes_actual:.0f} Unidades", delta_str)
+        p_col2.metric("Ventas Mes Pasado", f"{picking_mes_pasado:.0f} Unidades")
         p_col3.metric("Casillas Disponibles / Libres", f"{casillas_libres}")
 
         st.markdown("---")
 
         # BLOQUE 3: TENDENCIA DIARIA DE PICKING CON FILTRO DE SKU
-        st.subheader("📈 Tendencia Diaria de Picking (Días 1 al 31)")
+        st.subheader("📈 Tendencia Diaria de Ventas (Días 1 al 31)")
 
         df_skus_picking = obtener_df("""
             SELECT DISTINCT h.sku, p.nombre
             FROM historial_movimientos h
             JOIN productos p ON h.sku = p.sku
-            WHERE h.tipo_movimiento = 'DESPACHO' AND h.id_bodega = %s
+            WHERE (h.tipo_movimiento = 'VENTA' OR h.tipo_movimiento = 'DESPACHO') AND h.id_bodega = %s
             ORDER BY h.sku ASC
         """, (st.session_state.bodega_activa,))
 
@@ -1012,7 +1017,7 @@ else:
                        SUM(CASE WHEN MONTH(fecha_hora) = MONTH(CURRENT_DATE()) THEN cantidad ELSE 0 END) AS Mes_Actual,
                        SUM(CASE WHEN MONTH(fecha_hora) = MONTH(CURRENT_DATE() - INTERVAL 1 MONTH) THEN cantidad ELSE 0 END) AS Mes_Anterior
                 FROM historial_movimientos
-                WHERE tipo_movimiento = 'DESPACHO' AND id_bodega = %s
+                WHERE (tipo_movimiento = 'VENTA' OR tipo_movimiento = 'DESPACHO') AND id_bodega = %s
                 GROUP BY DAY(fecha_hora)
             """
             params_picking = (st.session_state.bodega_activa,)
@@ -1023,7 +1028,7 @@ else:
                        SUM(CASE WHEN MONTH(fecha_hora) = MONTH(CURRENT_DATE()) THEN cantidad ELSE 0 END) AS Mes_Actual,
                        SUM(CASE WHEN MONTH(fecha_hora) = MONTH(CURRENT_DATE() - INTERVAL 1 MONTH) THEN cantidad ELSE 0 END) AS Mes_Anterior
                 FROM historial_movimientos
-                WHERE tipo_movimiento = 'DESPACHO' AND id_bodega = %s AND sku = %s
+                WHERE (tipo_movimiento = 'VENTA' OR tipo_movimiento = 'DESPACHO') AND id_bodega = %s AND sku = %s
                 GROUP BY DAY(fecha_hora)
             """
             params_picking = (st.session_state.bodega_activa, sku_clean_filtro)
@@ -1052,7 +1057,7 @@ else:
             y="Unidades Despachadas",
             color="Periodo",
             markers=True,
-            title=f"Evolución del Picking Diario - {sku_filtro_sel}",
+            title=f"Evolución del Picking / Ventas Diario - {sku_filtro_sel}",
             labels={"dia": "Día del Mes", "Unidades Despachadas": "Unidades Despachadas"},
             color_discrete_map={"Mes Actual": "#1F3864", "Mes Anterior": "#94A3B8"}
         )
