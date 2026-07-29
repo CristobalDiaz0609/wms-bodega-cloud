@@ -287,7 +287,7 @@ def registrar_log_acceso(usuario, rol, bodega, accion="INICIO_SESION"):
 
 
 # ---------------------------------------------------------
-# FUNCIÓN DEL MOTOR DE FORECASTING (AISLADO POR BODEGA)
+# FUNCIÓN DEL MOTOR DE FORECASTING
 # ---------------------------------------------------------
 def ejecutar_job_forecasting(
     id_bodega, dias_historial=60, dias_proyeccion=30, lead_time_dias=7
@@ -295,7 +295,6 @@ def ejecutar_job_forecasting(
   conn = obtener_conexion()
   cursor = conn.cursor()
 
-  # 1. Consumo histórico estrictamente de la bodega seleccionada
   query_consumo = f"""
         SELECT sku, COALESCE(SUM(cantidad), 0) AS total_despachado
         FROM {NOMBRE_BD}.historial_movimientos
@@ -313,10 +312,8 @@ def ejecutar_job_forecasting(
       else {}
   )
 
-  # 2. Catálogo completo de productos
   df_prods = pd.read_sql(f"SELECT sku FROM {NOMBRE_BD}.productos", conn)
 
-  # 3. Stock actual estrictamente de la bodega seleccionada
   query_stock = f"""
         SELECT i.sku, COALESCE(SUM(i.cantidad), 0) AS stock_actual
         FROM {NOMBRE_BD}.inventario i
@@ -613,7 +610,6 @@ else:
         cursor.close()
         conn.close()
 
-        # RE-EJECUTAR AUTOMÁTICAMENTE FORECASTING TRAS LA VENTA
         try:
           ejecutar_job_forecasting(st.session_state.bodega_activa)
         except Exception:
@@ -1372,7 +1368,7 @@ else:
                 f" Error: {e}"
             )
 
-    # BLOQUE 0: ALERTAS DE REABASTECIMIENTO AISLADAS POR BODEGA (CORREGIDO EL BUG DEL JOIN)
+    # BLOQUE 0: ALERTAS AISLADAS ESTRICTAMENTE POR BODEGA ACTIVA
     try:
       query_alertas_reabastecimiento = f"""
                 SELECT 
@@ -1391,7 +1387,7 @@ else:
                 LEFT JOIN {NOMBRE_BD}.inventario i ON p.sku = i.sku
                 LEFT JOIN {NOMBRE_BD}.ubicaciones u ON i.id_ubicacion = u.id_ubicacion AND u.id_bodega = %s
                 LEFT JOIN {NOMBRE_BD}.forecast_demanda f ON p.sku = f.sku AND f.id_bodega = %s
-                WHERE u.id_ubicacion IS NOT NULL OR i.id_inventario IS NULL
+                WHERE u.id_ubicacion IS NOT NULL
                 GROUP BY p.sku, p.nombre, f.punto_reorden_sugerido, f.prediccion_prox_30d
                 HAVING stock_actual <= punto_reorden_sugerido
                 ORDER BY stock_actual ASC, punto_reorden_sugerido DESC;
@@ -1404,8 +1400,8 @@ else:
       if not df_forecast.empty:
         st.error(
             f"🚨 **ALERTAS DE REABASTECIMIENTO:** Se detectaron {len(df_forecast)}"
-            " SKU(s) cuya cantidad en stock está en o por debajo del punto de"
-            f" reorden en la bodega **{st.session_state.bodega_activa}**."
+            " SKU(s) con stock crítico o en quiebre en la bodega"
+            f" **{st.session_state.bodega_activa}**."
         )
         st.dataframe(
             df_forecast[[
@@ -1426,8 +1422,86 @@ else:
     except Exception as e:
       st.info(
           "ℹ️ Haz clic en **🔮 Recalcular Forecasting** para generar las"
-          f" predicciones de demanda iniciales. (Detalle: {e})"
+          f" predicciones iniciales. (Detalle: {e})"
       )
+
+    st.markdown("---")
+
+    # NUEVO BLOQUE: GRÁFICO DE LÍNEAS DE PREDICCIÓN DE VENTAS (PRÓXIMOS 2 MESES / 60 DÍAS)
+    st.subheader(
+        "📈 Gráfico de Predicción de Ventas a 2 Meses (Próximos 60 Días)"
+    )
+
+    try:
+      # Obtenemos los SKUs que tienen forecasting calculado en esta bodega
+      df_skus_fc = obtener_df(
+          f"""
+                SELECT f.sku, p.nombre, f.promedio_diario 
+                FROM {NOMBRE_BD}.forecast_demanda f
+                JOIN {NOMBRE_BD}.productos p ON f.sku = p.sku
+                WHERE f.id_bodega = %s
+                ORDER BY f.sku ASC;
+            """,
+          (st.session_state.bodega_activa,),
+      )
+
+      if df_skus_fc.empty:
+        st.info(
+            "ℹ️ No hay datos de forecasting calculados. Haz clic en **🔮"
+            " Recalcular Forecasting** arriba."
+        )
+      else:
+        opciones_sku_fc = (
+            df_skus_fc["sku"] + " - " + df_skus_fc["nombre"]
+        ).tolist()
+        sku_fc_sel = st.selectbox(
+            "Seleccionar SKU para proyectar ventas a 2 meses:", opciones_sku_fc
+        )
+
+        if sku_fc_sel:
+          sku_clean_fc = sku_fc_sel.split(" - ")[0]
+          prom_dia = float(
+              df_skus_fc[df_skus_fc["sku"] == sku_clean_fc][
+                  "promedio_diario"
+              ].values[0]
+          )
+
+          # Generar proyección acumulada o diaria para 60 días (2 meses)
+          dias_proyeccion = list(range(1, 61))
+          unidades_acumuladas = [
+              round(prom_dia * d, 2) for d in dias_proyeccion
+          ]
+
+          df_proyeccion_60d = pd.DataFrame({
+              "Dia_Proyectado": dias_proyeccion,
+              "Ventas_Acumuladas_Estimadas": unidades_acumuladas,
+          })
+
+          fig_fc = px.line(
+              df_proyeccion_60d,
+              x="Dia_Proyectado",
+              y="Ventas_Acumuladas_Estimadas",
+              markers=True,
+              title=(
+                  f"Proyección de Demanda a 60 Días (2 Meses) - SKU:"
+                  f" {sku_clean_fc} (Promedio: {prom_dia} un/día)"
+              ),
+              labels={
+                  "Dia_Proyectado": "Días Futuros",
+                  "Ventas_Acumuladas_Estimadas": (
+                      "Unidades Acumuladas Proyectadas"
+                  ),
+              },
+              color_discrete_sequence=["#2D4B7C"],
+          )
+          fig_fc.update_layout(
+              height=400,
+              paper_bgcolor="rgba(0,0,0,0)",
+              plot_bgcolor="rgba(0,0,0,0)",
+          )
+          st.plotly_chart(fig_fc, use_container_width=True)
+    except Exception as e:
+      st.warning(f"No se pudo cargar el gráfico de predicción: {e}")
 
     st.markdown("---")
 
