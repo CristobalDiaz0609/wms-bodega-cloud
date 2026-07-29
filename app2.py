@@ -1428,10 +1428,10 @@ else:
     st.markdown("---")
 
     # =========================================================================
-    # GRÁFICO DE LÍNEAS AVANZADO: TENDENCIA SEMANAL + PROYECCIÓN 2 MESES (60 DÍAS)
+    # GRÁFICO DE LÍNEAS GERENCIAL: HISTÓRICO SEMANAL + PROYECCIÓN PLANA (60 DÍAS)
     # =========================================================================
     st.subheader(
-        "📈 Tendencia de Ventas (Semanal) y Proyección Futura (60 Días)"
+        "📈 Tendencia Semanal de Ventas y Proyección Plana (Próximos 60 Días)"
     )
 
     try:
@@ -1457,14 +1457,14 @@ else:
             df_skus_chart["sku"] + " - " + df_skus_chart["nombre"]
         ).tolist()
         sku_chart_sel = st.selectbox(
-            "Seleccionar SKU para análisis de tendencia y proyección:",
+            "Seleccionar SKU para análisis de tendencia y proyección plana:",
             opciones_chart_sku,
         )
 
         if sku_chart_sel:
           sku_clean_chart = sku_chart_sel.split(" - ")[0]
 
-          # 1. HISTÓRICO REAL AGREGADO POR SEMANA (Últimos 90 días)
+          # 1. HISTÓRICO REAL AGREGADO POR SEMANA (Últimos 90 días, ordenado cronológicamente)
           query_historico = f"""
                         SELECT 
                             DATE_SUB(fecha_hora, INTERVAL WEEKDAY(fecha_hora) DAY) AS fecha_semana,
@@ -1482,7 +1482,7 @@ else:
               (st.session_state.bodega_activa, sku_clean_chart),
           )
 
-          # 2. OBTENER PROMEDIO DIARIO Y PUNTO DE REORDEN PARA LA PROYECCIÓN
+          # 2. OBTENER PROMEDIO DIARIO Y PUNTO DE REORDEN
           df_fc_val = obtener_df(
               f"""
                         SELECT promedio_diario, punto_reorden_sugerido
@@ -1503,12 +1503,11 @@ else:
               else 2
           )
 
-          # Construir DataFrames para el gráfico Plotly nativo (Go)
           fig = go.Figure()
 
           if not df_hist.empty:
             df_hist["fecha_semana"] = pd.to_datetime(df_hist["fecha_semana"])
-            # Línea Sólida: Histórico Real
+            # Línea Sólida: Histórico Real Semanal
             fig.add_trace(go.Scatter(
                 x=df_hist["fecha_semana"],
                 y=df_hist["unidades"],
@@ -1522,49 +1521,49 @@ else:
             ultima_fecha_hist = pd.Timestamp.today().normalize()
             ultimo_valor_hist = 0
 
-          # 3. PROYECCIÓN FUTURA A 60 DÍAS (2 MESES) CON BANDA DE INCERTIDUMBRE (±20%)
+          # 3. PROYECCIÓN PLANA (Basada en el promedio diario real escalado a semanas, sin pendientes locas)
           fechas_futuras = [
-              ultima_fecha_hist + pd.Timedelta(days=i) for i in range(0, 61, 7)
-          ]  # Semanal hacia adelante
-          ventas_semanales_est = prom_diario_sku * 7
+              ultima_fecha_hist + pd.Timedelta(days=i) for i in range(7, 61, 7)
+          ]  # Semanal hacia adelante (aprox 2 meses)
+          venta_semanal_constante = round(prom_diario_sku * 7, 2)
 
           y_proyectado = [
-              max(0, round(ultimo_valor_hist + (ventas_semanales_est * (i + 1)), 1))
-              for i in range(len(fechas_futuras))
+              venta_semanal_constante for _ in range(len(fechas_futuras))
           ]
           y_upper = [
-              round(val * 1.2, 1) for val in y_proyectado
-          ]  # Límite superior incertidumbre (+20%)
+              round(val * 1.2, 2) for val in y_proyectado
+          ]  # Banda superior (+20%)
           y_lower = [
-              round(max(0, val * 0.8), 1) for val in y_proyectado
-          ]  # Límite inferior incertidumbre (-20%)
+              round(max(0, val * 0.8), 2) for val in y_proyectado
+          ]  # Banda inferior (-20%)
 
           # Banda Sombreada de Incertidumbre
-          fig.add_trace(go.Scatter(
-              x=fechas_futuras + fechas_futuras[::-1],
-              y=y_upper + y_lower[::-1],
-              fill="toself",
-              fillcolor="rgba(59, 130, 246, 0.15)",
-              line=dict(color="rgba(255,255,255,0)"),
-              showlegend=True,
-              name="Rango de Incertidumbre (±20%)",
-          ))
+          if fechas_futuras:
+            fig.add_trace(go.Scatter(
+                x=fechas_futuras + fechas_futuras[::-1],
+                y=y_upper + y_lower[::-1],
+                fill="toself",
+                fillcolor="rgba(59, 130, 246, 0.15)",
+                line=dict(color="rgba(255,255,255,0)"),
+                showlegend=True,
+                name="Rango de Incertidumbre (±20%)",
+            ))
 
-          # Línea Punteada: Estimado Futuro a 60 días
-          fig.add_trace(go.Scatter(
-              x=fechas_futuras,
-              y=y_proyectado,
-              mode="lines+markers",
-              name="Proyección (Próximos 60 Días)",
-              line=dict(color="#3B82F6", width=3, dash="dot"),
-          ))
+            # Línea Punteada: Proyección Plana Constante
+            fig.add_trace(go.Scatter(
+                x=fechas_futuras,
+                y=y_proyectado,
+                mode="lines+markers",
+                name=f"Proyección Plana ({venta_semanal_constante} un/sem)",
+                line=dict(color="#3B82F6", width=3, dash="dot"),
+            ))
 
-          # 4. LÍNEA HORIZONTAL PUNTEADA: PUNTO DE REORDEN (ROJO/NARANJA)
+          # 4. LÍNEA HORIZONTAL PUNTEADA ROJA/NARANJA: PUNTO DE REORDEN (ROP)
           if not df_hist.empty:
             x_min_line = df_hist["fecha_semana"].min()
           else:
             x_min_line = pd.Timestamp.today()
-          x_max_line = fechas_futuras[-1]
+          x_max_line = fechas_futuras[-1] if fechas_futuras else x_min_line
 
           fig.add_trace(go.Scatter(
               x=[x_min_line, x_max_line],
@@ -1574,11 +1573,14 @@ else:
               line=dict(color="#EF4444", width=2, dash="dash"),
           ))
 
-          # Diseño general del gráfico gerencial
+          # Layout del Gráfico Gerencial
           fig.update_layout(
-              title=f"Tendencia y Proyección a 2 Meses - SKU: {sku_clean_chart}",
+              title=(
+                  f"Tendencia Semanal y Proyección Plana a 2 Meses - SKU:"
+                  f" {sku_clean_chart}"
+              ),
               xaxis_title="Eje Temporal (Agrupado por Semana)",
-              yaxis_title="Unidades Vendidas",
+              yaxis_title="Unidades Vendidas por Semana",
               height=450,
               paper_bgcolor="rgba(0,0,0,0)",
               plot_bgcolor="rgba(0,0,0,0)",
